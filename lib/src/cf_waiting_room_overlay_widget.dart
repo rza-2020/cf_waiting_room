@@ -59,9 +59,11 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
     this.reQueuePageBuilder,
     this.isMock = false,
     this.locale,
-    this.defaultWaitingTitle,
-    this.waitingRefreshMessage,
-    this.lastUpdatedPrefix,
+    this.overlayIcon,
+    this.loadingIcon,
+    this.overlayBackgroundColor,
+    this.titleStyle,
+    this.refreshMessageStyle,
   });
 
   /// Configuration for the waiting room behaviour and keyword detection.
@@ -114,24 +116,36 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
   /// 3. The device system locale (`PlatformDispatcher.instance.locale`).
   final Locale? locale;
 
-  // ── Default overlay text customisation ─────────────────────────────────
+  // ── Default overlay visual customisation ───────────────────────────────
 
-  /// Fallback title shown in the default Phase 2 overlay when the CF page
-  /// does not supply an `<h1>` heading.
+  /// Widget shown as a brand logo at the very top of the default Phase 2
+  /// overlay (above the spinner). Any widget is accepted — e.g.
+  /// `Image.asset('assets/logo.png')`, `SvgPicture.asset(...)`, etc.
   ///
-  /// Defaults to `'You are in the queue.\nThank you for your patience.'`
-  final String? defaultWaitingTitle;
+  /// When `null` no logo is shown.
+  final Widget? overlayIcon;
 
-  /// Body message shown below the ETA in the default Phase 2 overlay.
+  /// Widget that replaces the animated hourglass **spinner** in the default
+  /// Phase 2 overlay. Any widget is accepted — e.g.
+  /// `Image.asset('assets/loading.gif')`, a `Lottie` animation, etc.
   ///
-  /// Defaults to `'This page will refresh automatically.\nPlease keep the app open.'`
-  final String? waitingRefreshMessage;
+  /// When `null` the built-in `AnimatedRotation` hourglass is used.
+  final Widget? loadingIcon;
 
-  /// Prefix prepended to [QueueWaitingInfo.lastUpdated] in the default
-  /// Phase 2 overlay (e.g. `'Last updated: '`).
+  /// Background colour of the default Phase 2 overlay.
   ///
-  /// Defaults to `'Last updated: '`
-  final String? lastUpdatedPrefix;
+  /// Defaults to `Color(0xFF1A2C45)`.
+  final Color? overlayBackgroundColor;
+
+  /// [TextStyle] for the title / in-queue heading in the default overlay.
+  ///
+  /// When `null` the built-in style (white, 20 px, bold) is used.
+  final TextStyle? titleStyle;
+
+  /// [TextStyle] for the "refresh automatically" body line in the default overlay.
+  ///
+  /// When `null` the built-in style (white70, 13 px) is used.
+  final TextStyle? refreshMessageStyle;
 
   // ── Static API ─────────────────────────────────────────────────────────────
 
@@ -437,9 +451,14 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
         : _DefaultWaitingOverlay(
             info: _waitingInfo,
             hourglassTurns: _hourglassTurns,
-            defaultWaitingTitle: widget.defaultWaitingTitle,
-            waitingRefreshMessage: widget.waitingRefreshMessage,
-            lastUpdatedPrefix: widget.lastUpdatedPrefix,
+            defaultWaitingTitle: widget.config.defaultWaitingTitle,
+            waitingRefreshMessage: widget.config.waitingRefreshMessage,
+            lastUpdatedPrefix: widget.config.lastUpdatedPrefix,
+            overlayIcon: widget.overlayIcon,
+            loadingIcon: widget.loadingIcon,
+            overlayBackgroundColor: widget.overlayBackgroundColor,
+            titleStyle: widget.titleStyle,
+            refreshMessageStyle: widget.refreshMessageStyle,
           );
 
     return Positioned.fill(
@@ -476,38 +495,56 @@ class _DefaultWaitingOverlay extends StatelessWidget {
     this.defaultWaitingTitle,
     this.waitingRefreshMessage,
     this.lastUpdatedPrefix,
+    this.overlayIcon,
+    this.loadingIcon,
+    this.overlayBackgroundColor,
+    this.titleStyle,
+    this.refreshMessageStyle,
   });
 
   final QueueWaitingInfo info;
   final double hourglassTurns;
-
-  /// Fallback title when [QueueWaitingInfo.title] is null.
   final String? defaultWaitingTitle;
-
-  /// Message shown below the ETA.
   final String? waitingRefreshMessage;
-
-  /// Prefix prepended to [QueueWaitingInfo.lastUpdated].
   final String? lastUpdatedPrefix;
+
+  /// Brand logo widget shown at the top of the overlay.
+  final Widget? overlayIcon;
+
+  /// Widget that replaces the animated hourglass spinner.
+  final Widget? loadingIcon;
+
+  final Color? overlayBackgroundColor;
+  final TextStyle? titleStyle;
+  final TextStyle? refreshMessageStyle;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: _kDefaultBg,
+      color: overlayBackgroundColor ?? _kDefaultBg,
       child: SafeArea(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            AnimatedRotation(
-              turns: hourglassTurns,
-              duration: const Duration(milliseconds: 600),
-              curve: Curves.easeInOut,
-              child: const Icon(
-                Icons.hourglass_top,
-                color: Colors.white,
-                size: 56,
-              ),
-            ),
+            // ── Brand logo (optional) ──────────────────────────────────
+            if (overlayIcon != null) ...[
+              overlayIcon!,
+              const SizedBox(height: 20),
+            ],
+
+            // ── Spinner / loading icon ─────────────────────────────────
+            loadingIcon ??
+                AnimatedRotation(
+                  turns: hourglassTurns,
+                  duration: const Duration(milliseconds: 600),
+                  curve: Curves.easeInOut,
+                  child: const Icon(
+                    Icons.hourglass_top,
+                    color: Colors.white,
+                    size: 56,
+                  ),
+                ),
+
             const SizedBox(height: 24),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -516,12 +553,13 @@ class _DefaultWaitingOverlay extends StatelessWidget {
                     defaultWaitingTitle ??
                     'You are in the queue.\nThank you for your patience.',
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  height: 1.5,
-                ),
+                style: titleStyle ??
+                    const TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      height: 1.5,
+                    ),
               ),
             ),
             if (info.eta != null) ...[
@@ -546,11 +584,12 @@ class _DefaultWaitingOverlay extends StatelessWidget {
                 waitingRefreshMessage ??
                     'This page will refresh automatically.\nPlease keep the app open.',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.white70,
-                  fontSize: 13,
-                  height: 1.5,
-                ),
+                style: refreshMessageStyle ??
+                    const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 13,
+                      height: 1.5,
+                    ),
               ),
             ),
             if (info.lastUpdated != null) ...[

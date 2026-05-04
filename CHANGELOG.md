@@ -1,3 +1,14 @@
+## 0.2.2
+
+- feat: visual customisation parameters for the default Phase 2 overlay.
+  - `overlayIcon` (`Widget?`) — brand logo widget shown above the spinner (replaces old `overlayIconAsset`).
+  - `loadingIcon` (`Widget?`) — widget that replaces the `AnimatedRotation` hourglass spinner slot.
+  - Accepts any widget: `Image.asset`, `Image.network`, Lottie, `SvgPicture`, etc.
+  - `overlayBackgroundColor` (`Color?`) — background colour of the overlay.
+  - `titleStyle` / `refreshMessageStyle` (`TextStyle?`) — text styles for the two body lines.
+- feat: text labels (`defaultWaitingTitle`, `waitingRefreshMessage`, `lastUpdatedPrefix`) moved to `WaitingRoomConfig` for Firebase Remote Config support.
+- chore: expanded `.gitignore` with iOS Pods, Android Gradle, build artefacts.
+
 ## 0.2.1
 
 - feat: expose default overlay text via constructor parameters on `CFWaitingRoomOverlayWidget`.

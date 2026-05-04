@@ -51,6 +51,27 @@ class WaitingRoomConfig {
   @JsonKey(name: 'locale')
   final String? locale;
 
+  // ── Default overlay text (drivable from Remote Config) ──────────────────
+
+  /// Fallback title shown in the default Phase 2 overlay when the CF page
+  /// does not supply an `<h1>` heading.
+  ///
+  /// Defaults to `'You are in the queue.\nThank you for your patience.'`
+  @JsonKey(name: 'defaultWaitingTitle')
+  final String? defaultWaitingTitle;
+
+  /// Body message shown below the ETA in the default Phase 2 overlay.
+  ///
+  /// Defaults to `'This page will refresh automatically.\nPlease keep the app open.'`
+  @JsonKey(name: 'waitingRefreshMessage')
+  final String? waitingRefreshMessage;
+
+  /// Prefix prepended to the last-updated timestamp in the default Phase 2 overlay.
+  ///
+  /// Defaults to `'Last updated: '`
+  @JsonKey(name: 'lastUpdatedPrefix')
+  final String? lastUpdatedPrefix;
+
   WaitingRoomConfig({
     this.isEnable,
     this.queueUrl,
@@ -63,6 +84,9 @@ class WaitingRoomConfig {
     this.reQueueDialogMessage,
     this.reQueueDialogBtnText,
     this.locale,
+    this.defaultWaitingTitle,
+    this.waitingRefreshMessage,
+    this.lastUpdatedPrefix,
   });
 
   factory WaitingRoomConfig.fromJson(Map<String, dynamic> json) =>
@@ -72,16 +96,16 @@ class WaitingRoomConfig {
 
   bool get isEnabled => isEnable ?? false;
 
-  List<String> get effectiveQueueKeyWords =>
-      (queueKeyWord?.isNotEmpty == true)
-          ? queueKeyWord!
-          : ['waiting', 'queue', '等候'];
+  List<String> get effectiveQueueKeyWords => (queueKeyWord?.isNotEmpty == true)
+      ? queueKeyWord!
+      : ['waiting', 'queue', '等候'];
 
   /// Returns configured [passKeyWord] list, or an empty list if unset.
   /// When empty, the widget treats any non-CF page as the real app page.
   List<String> get effectivePassKeyWords => passKeyWord ?? [];
 
-  String get effectiveEtaId => (etaId?.isNotEmpty == true) ? etaId! : 'waitTime';
+  String get effectiveEtaId =>
+      (etaId?.isNotEmpty == true) ? etaId! : 'waitTime';
 
   String get effectiveLastUpdatedId =>
       (lastUpdatedId?.isNotEmpty == true) ? lastUpdatedId! : 'last-updated';

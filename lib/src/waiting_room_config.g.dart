@@ -23,6 +23,9 @@ WaitingRoomConfig _$WaitingRoomConfigFromJson(Map<String, dynamic> json) =>
       reQueueDialogMessage: json['reQueueDialogMessage'] as String?,
       reQueueDialogBtnText: json['reQueueDialogBtnText'] as String?,
       locale: json['locale'] as String?,
+      defaultWaitingTitle: json['defaultWaitingTitle'] as String?,
+      waitingRefreshMessage: json['waitingRefreshMessage'] as String?,
+      lastUpdatedPrefix: json['lastUpdatedPrefix'] as String?,
     );
 
 Map<String, dynamic> _$WaitingRoomConfigToJson(WaitingRoomConfig instance) =>
@@ -38,4 +41,7 @@ Map<String, dynamic> _$WaitingRoomConfigToJson(WaitingRoomConfig instance) =>
       'reQueueDialogMessage': instance.reQueueDialogMessage,
       'reQueueDialogBtnText': instance.reQueueDialogBtnText,
       'locale': instance.locale,
+      'defaultWaitingTitle': instance.defaultWaitingTitle,
+      'waitingRefreshMessage': instance.waitingRefreshMessage,
+      'lastUpdatedPrefix': instance.lastUpdatedPrefix,
     };

@@ -4,12 +4,42 @@
 .flutter-plugins-dependencies
 .packages
 build/
+**/build/
 pubspec.lock
 
 # IDE
 .idea/
 .vscode/
 *.iml
+*.ipr
+*.iws
 
 # macOS
 .DS_Store
+**/.DS_Store
+
+# Coverage / docs
+coverage/
+**/doc/api/
+
+# Pub cache
+.pub-cache/
+.pub/
+
+# iOS
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/.last_build_id
+**/ios/Runner/GeneratedPluginRegistrant.*
+
+# Android
+**/android/.gradle/
+**/android/local.properties
+**/android/key.properties
+**/android/app/debug/
+**/android/app/profile/
+**/android/app/release/
+
+# Symbolication / obfuscation
+app.*.symbols
+app.*.map.json
