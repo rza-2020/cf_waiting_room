@@ -59,6 +59,9 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
     this.reQueuePageBuilder,
     this.isMock = false,
     this.locale,
+    this.defaultWaitingTitle,
+    this.waitingRefreshMessage,
+    this.lastUpdatedPrefix,
   });
 
   /// Configuration for the waiting room behaviour and keyword detection.
@@ -85,7 +88,7 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
   /// waitingOverlayBuilder: (context, info) => MyWaitingScreen(info: info),
   /// ```
   final Widget Function(BuildContext context, QueueWaitingInfo info)?
-  waitingOverlayBuilder;
+      waitingOverlayBuilder;
 
   /// Builder for the full-screen page shown by [forceReQueue].
   ///
@@ -96,7 +99,7 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
   /// reQueuePageBuilder: (context, onConfirm) => MyReQueuePage(onConfirm: onConfirm),
   /// ```
   final Widget Function(BuildContext context, VoidCallback onConfirm)?
-  reQueuePageBuilder;
+      reQueuePageBuilder;
 
   /// When `true`, loads the bundled mock HTML asset instead of [WaitingRoomConfig.queueUrl].
   /// Useful for development and UI testing without a live CF endpoint.
@@ -110,6 +113,25 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
   /// 2. [WaitingRoomConfig.locale] (Remote Config string, e.g. `"zh-TW"`).
   /// 3. The device system locale (`PlatformDispatcher.instance.locale`).
   final Locale? locale;
+
+  // ── Default overlay text customisation ─────────────────────────────────
+
+  /// Fallback title shown in the default Phase 2 overlay when the CF page
+  /// does not supply an `<h1>` heading.
+  ///
+  /// Defaults to `'You are in the queue.\nThank you for your patience.'`
+  final String? defaultWaitingTitle;
+
+  /// Body message shown below the ETA in the default Phase 2 overlay.
+  ///
+  /// Defaults to `'This page will refresh automatically.\nPlease keep the app open.'`
+  final String? waitingRefreshMessage;
+
+  /// Prefix prepended to [QueueWaitingInfo.lastUpdated] in the default
+  /// Phase 2 overlay (e.g. `'Last updated: '`).
+  ///
+  /// Defaults to `'Last updated: '`
+  final String? lastUpdatedPrefix;
 
   // ── Static API ─────────────────────────────────────────────────────────────
 
@@ -415,6 +437,9 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
         : _DefaultWaitingOverlay(
             info: _waitingInfo,
             hourglassTurns: _hourglassTurns,
+            defaultWaitingTitle: widget.defaultWaitingTitle,
+            waitingRefreshMessage: widget.waitingRefreshMessage,
+            lastUpdatedPrefix: widget.lastUpdatedPrefix,
           );
 
     return Positioned.fill(
@@ -448,10 +473,22 @@ class _DefaultWaitingOverlay extends StatelessWidget {
   const _DefaultWaitingOverlay({
     required this.info,
     required this.hourglassTurns,
+    this.defaultWaitingTitle,
+    this.waitingRefreshMessage,
+    this.lastUpdatedPrefix,
   });
 
   final QueueWaitingInfo info;
   final double hourglassTurns;
+
+  /// Fallback title when [QueueWaitingInfo.title] is null.
+  final String? defaultWaitingTitle;
+
+  /// Message shown below the ETA.
+  final String? waitingRefreshMessage;
+
+  /// Prefix prepended to [QueueWaitingInfo.lastUpdated].
+  final String? lastUpdatedPrefix;
 
   @override
   Widget build(BuildContext context) {
@@ -476,6 +513,7 @@ class _DefaultWaitingOverlay extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 32),
               child: Text(
                 info.title ??
+                    defaultWaitingTitle ??
                     'You are in the queue.\nThank you for your patience.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
@@ -502,10 +540,11 @@ class _DefaultWaitingOverlay extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 16),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 32),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
               child: Text(
-                'This page will refresh automatically.\nPlease keep the app open.',
+                waitingRefreshMessage ??
+                    'This page will refresh automatically.\nPlease keep the app open.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: Colors.white70,
@@ -517,7 +556,7 @@ class _DefaultWaitingOverlay extends StatelessWidget {
             if (info.lastUpdated != null) ...[
               const SizedBox(height: 20),
               Text(
-                'Last updated: ${info.lastUpdated}',
+                '${lastUpdatedPrefix ?? 'Last updated: '}${info.lastUpdated}',
                 style: const TextStyle(color: Colors.white54, fontSize: 12),
               ),
             ],
