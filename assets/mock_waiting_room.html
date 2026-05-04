@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Waiting Room — Queue</title>
+  <style>
+    body { font-family: sans-serif; display: flex; flex-direction: column;
+           align-items: center; justify-content: center; min-height: 100vh;
+           margin: 0; background: #1a2c45; color: #fff; text-align: center; }
+    h1   { font-size: 1.4rem; margin-bottom: 8px; }
+    p    { color: #ccc; font-size: 0.9rem; }
+    #waitTime     { font-size: 1.1rem; font-weight: bold; margin: 12px 0; }
+    #last-updated { font-size: 0.8rem; color: #aaa; margin-top: 8px; }
+    button { margin-top: 32px; padding: 12px 28px; font-size: 1rem;
+             border: none; border-radius: 8px; background: #fff;
+             color: #1a2c45; cursor: pointer; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>You are in the queue</h1>
+  <p>Please wait while we process your request.</p>
+  <div id="waitTime">~5 minutes</div>
+  <div id="last-updated">Updated just now</div>
+  <button onclick="simulateDone()">Simulate queue done (dev only)</button>
+  <script>
+    function simulateDone() {
+      if (window.FlutterQueueBridge) {
+        FlutterQueueBridge.postMessage('done');
+      }
+    }
+    // Auto-update last-updated every 30s to mimic CF behaviour
+    setInterval(function() {
+      document.getElementById('last-updated').innerText =
+        'Updated ' + new Date().toLocaleTimeString();
+    }, 30000);
+  </script>
+</body>
+</html>

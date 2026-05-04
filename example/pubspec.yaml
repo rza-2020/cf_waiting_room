@@ -1,0 +1,17 @@
+name: cf_waiting_room_example
+description: Example app for cf_waiting_room package.
+publish_to: none
+version: 1.0.0
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cf_waiting_room:
+    path: ../
+
+flutter:
+  uses-material-design: true
