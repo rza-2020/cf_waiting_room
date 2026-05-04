@@ -68,8 +68,9 @@ class WaitingRoomConfig {
           ? queueKeyWord!
           : ['waiting', 'queue', '等候'];
 
-  List<String> get effectivePassKeyWords =>
-      (passKeyWord?.isNotEmpty == true) ? passKeyWord! : ['paykool'];
+  /// Returns configured [passKeyWord] list, or an empty list if unset.
+  /// When empty, the widget treats any non-CF page as the real app page.
+  List<String> get effectivePassKeyWords => passKeyWord ?? [];
 
   String get effectiveEtaId => (etaId?.isNotEmpty == true) ? etaId! : 'waitTime';
 

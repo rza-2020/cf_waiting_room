@@ -37,7 +37,7 @@ void main() {
       });
 
       test('effectivePassKeyWords', () {
-        expect(empty.effectivePassKeyWords, ['paykool']);
+        expect(empty.effectivePassKeyWords, isEmpty);
       });
 
       test('effectiveEtaId', () {

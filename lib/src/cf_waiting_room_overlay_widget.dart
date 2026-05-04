@@ -223,10 +223,12 @@ class _CFWaitingRoomOverlayWidgetState
   }
 
   bool _isRealAppPage(String title) {
+    if (_isAnyCFPage(title)) return false;
+    final passKws = widget.config.effectivePassKeyWords;
+    // If no passKeyWords configured, any non-CF page is treated as the real app
+    if (passKws.isEmpty) return true;
     final t = title.toLowerCase();
-    return widget.config.effectivePassKeyWords
-            .any((kw) => t.contains(kw.toLowerCase())) &&
-        !_isAnyCFPage(title);
+    return passKws.any((kw) => t.contains(kw.toLowerCase()));
   }
 
   // ── Session timer ────────────────────────────────────────────────────────
