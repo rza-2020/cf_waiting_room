@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -57,6 +58,7 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
     this.waitingOverlayBuilder,
     this.reQueuePageBuilder,
     this.isMock = false,
+    this.locale,
   });
 
   /// Configuration for the waiting room behaviour and keyword detection.
@@ -83,7 +85,7 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
   /// waitingOverlayBuilder: (context, info) => MyWaitingScreen(info: info),
   /// ```
   final Widget Function(BuildContext context, QueueWaitingInfo info)?
-      waitingOverlayBuilder;
+  waitingOverlayBuilder;
 
   /// Builder for the full-screen page shown by [forceReQueue].
   ///
@@ -94,11 +96,20 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
   /// reQueuePageBuilder: (context, onConfirm) => MyReQueuePage(onConfirm: onConfirm),
   /// ```
   final Widget Function(BuildContext context, VoidCallback onConfirm)?
-      reQueuePageBuilder;
+  reQueuePageBuilder;
 
   /// When `true`, loads the bundled mock HTML asset instead of [WaitingRoomConfig.queueUrl].
   /// Useful for development and UI testing without a live CF endpoint.
   final bool isMock;
+
+  /// BCP-47 locale to use as the `Accept-Language` request header when
+  /// loading the queue URL (e.g. `Locale('zh', 'TW')` → `"zh-TW"`).
+  ///
+  /// Resolution order:
+  /// 1. This [locale] parameter (widget-level override).
+  /// 2. [WaitingRoomConfig.locale] (Remote Config string, e.g. `"zh-TW"`).
+  /// 3. The device system locale (`PlatformDispatcher.instance.locale`).
+  final Locale? locale;
 
   // ── Static API ─────────────────────────────────────────────────────────────
 
@@ -150,8 +161,8 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
       _CFWaitingRoomOverlayWidgetState();
 }
 
-class _CFWaitingRoomOverlayWidgetState
-    extends State<CFWaitingRoomOverlayWidget> with WidgetsBindingObserver {
+class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
+    with WidgetsBindingObserver {
   late final WebViewController _controller;
 
   bool _showNativeOverlay = false;
@@ -166,7 +177,8 @@ class _CFWaitingRoomOverlayWidgetState
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     debugPrint(
-        '[CF_WR] ▶ initState  url=${widget.config.queueUrl}  isMock=${widget.isMock}');
+      '[CF_WR] ▶ initState  url=${widget.config.queueUrl}  isMock=${widget.isMock}',
+    );
     _initWebView();
     _rotationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _hourglassTurns += 0.25);
@@ -201,8 +213,9 @@ class _CFWaitingRoomOverlayWidgetState
       debugPrint('[CF_WR] _isWaitingRoomPage → true (CF structural URL)');
       return true;
     }
-    final result = widget.config.effectiveQueueKeyWords
-        .any((kw) => t.contains(kw.toLowerCase()));
+    final result = widget.config.effectiveQueueKeyWords.any(
+      (kw) => t.contains(kw.toLowerCase()),
+    );
     debugPrint('[CF_WR] _isWaitingRoomPage  title="$title"  → $result');
     return result;
   }
@@ -218,8 +231,9 @@ class _CFWaitingRoomOverlayWidgetState
       'enable javascript',
     ];
     if (cfMeta.any((s) => t.contains(s))) return true;
-    return widget.config.effectiveQueueKeyWords
-        .any((kw) => t.contains(kw.toLowerCase()));
+    return widget.config.effectiveQueueKeyWords.any(
+      (kw) => t.contains(kw.toLowerCase()),
+    );
   }
 
   bool _isRealAppPage(String title) {
@@ -244,6 +258,22 @@ class _CFWaitingRoomOverlayWidgetState
     });
   }
 
+  // ── Locale resolution ────────────────────────────────────────────────────
+
+  /// Returns the effective [Locale] to use as the `Accept-Language` header.
+  ///
+  /// Priority: widget.locale → config.locale → system locale.
+  Locale _resolveLocale() {
+    if (widget.locale != null) return widget.locale!;
+    final cfgLocale = widget.config.locale;
+    if (cfgLocale != null && cfgLocale.isNotEmpty) {
+      final parts = cfgLocale.split(RegExp(r'[-_]'));
+      if (parts.length >= 2) return Locale(parts[0], parts[1]);
+      return Locale(parts[0]);
+    }
+    return PlatformDispatcher.instance.locale;
+  }
+
   // ── WebView ──────────────────────────────────────────────────────────────
 
   Future<void> _initWebView() async {
@@ -256,17 +286,19 @@ class _CFWaitingRoomOverlayWidgetState
           if (msg.message == 'done') widget.onQueueDone();
         },
       )
-      ..setNavigationDelegate(NavigationDelegate(
-        onPageStarted: (url) => debugPrint('[CF_WR] 🌐 onPageStarted  $url'),
-        onNavigationRequest: (_) => NavigationDecision.navigate,
-        onPageFinished: _onPageFinished,
-        onWebResourceError: (error) {
-          if (error.isForMainFrame == true) {
-            debugPrint('[CF_WR] ❌ Main-frame error → onQueueDone()');
-            widget.onQueueDone();
-          }
-        },
-      ));
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageStarted: (url) => debugPrint('[CF_WR] 🌐 onPageStarted  $url'),
+          onNavigationRequest: (_) => NavigationDecision.navigate,
+          onPageFinished: _onPageFinished,
+          onWebResourceError: (error) {
+            if (error.isForMainFrame == true) {
+              debugPrint('[CF_WR] ❌ Main-frame error → onQueueDone()');
+              widget.onQueueDone();
+            }
+          },
+        ),
+      );
 
     if (widget.config.clearCookieOnStart != false) {
       debugPrint('[CF_WR] 🧹 Clearing cookies, cache and local storage');
@@ -278,26 +310,37 @@ class _CFWaitingRoomOverlayWidgetState
     }
 
     final queueUrl = widget.config.queueUrl ?? '';
+    final acceptLanguage = _resolveLocale().toLanguageTag();
+    debugPrint('[CF_WR] 🌐 Accept-Language: $acceptLanguage');
     if (widget.isMock) {
       try {
         final html = await rootBundle.loadString(
-            'packages/cf_waiting_room/assets/mock_waiting_room.html');
+          'packages/cf_waiting_room/assets/mock_waiting_room.html',
+        );
         await _controller.loadHtmlString(html, baseUrl: queueUrl);
       } catch (_) {
         if (queueUrl.isNotEmpty) {
-          _controller.loadRequest(Uri.parse(queueUrl));
+          _controller.loadRequest(
+            Uri.parse(queueUrl),
+            headers: {'Accept-Language': acceptLanguage},
+          );
         }
       }
     } else if (queueUrl.isNotEmpty) {
-      _controller.loadRequest(Uri.parse(queueUrl));
+      _controller.loadRequest(
+        Uri.parse(queueUrl),
+        headers: {'Accept-Language': acceptLanguage},
+      );
     }
   }
 
   Future<void> _onPageFinished(String pageUrl) async {
     final title = await _controller.getTitle() ?? '';
     final isWaiting = _isWaitingRoomPage(pageUrl, title);
-    debugPrint('[CF_WR] ✔ onPageFinished  url="$pageUrl"  title="$title"'
-        '  isWaiting=$isWaiting  nativeOverlay=$_showNativeOverlay');
+    debugPrint(
+      '[CF_WR] ✔ onPageFinished  url="$pageUrl"  title="$title"'
+      '  isWaiting=$isWaiting  nativeOverlay=$_showNativeOverlay',
+    );
 
     if (!isWaiting && !_showNativeOverlay) {
       if (title.isEmpty || _isAnyCFPage(title)) return;
@@ -321,8 +364,9 @@ class _CFWaitingRoomOverlayWidgetState
     String? title_, eta_, lastUpdated_;
     try {
       final raw = await _controller.runJavaScriptReturningResult(
-          "Array.from(document.querySelectorAll('h1'))"
-          ".map(e=>e.innerText.trim()).filter(t=>t.length>0).join('\\n')");
+        "Array.from(document.querySelectorAll('h1'))"
+        ".map(e=>e.innerText.trim()).filter(t=>t.length>0).join('\\n')",
+      );
       title_ = (raw as String)
           .replaceAll(RegExp(r'^"|"$'), '')
           .replaceAll(r'\n', '\n')
@@ -331,15 +375,16 @@ class _CFWaitingRoomOverlayWidgetState
     } catch (_) {}
     try {
       final raw = await _controller.runJavaScriptReturningResult(
-          "document.getElementById('$etaId')?.innerText?.trim()??''");
+        "document.getElementById('$etaId')?.innerText?.trim()??''",
+      );
       eta_ = (raw as String).replaceAll(RegExp(r'^"|"$'), '').trim();
       if (eta_.isEmpty) eta_ = null;
     } catch (_) {}
     try {
       final raw = await _controller.runJavaScriptReturningResult(
-          "document.getElementById('$lastUpdatedId')?.innerText?.trim()??''");
-      lastUpdated_ =
-          (raw as String).replaceAll(RegExp(r'^"|"$'), '').trim();
+        "document.getElementById('$lastUpdatedId')?.innerText?.trim()??''",
+      );
+      lastUpdated_ = (raw as String).replaceAll(RegExp(r'^"|"$'), '').trim();
       if (lastUpdated_.isEmpty) lastUpdated_ = null;
     } catch (_) {}
 
@@ -347,8 +392,11 @@ class _CFWaitingRoomOverlayWidgetState
       final firstTransition = !_showNativeOverlay;
       setState(() {
         _showNativeOverlay = true;
-        _waitingInfo =
-            QueueWaitingInfo(title: title_, eta: eta_, lastUpdated: lastUpdated_);
+        _waitingInfo = QueueWaitingInfo(
+          title: title_,
+          eta: eta_,
+          lastUpdated: lastUpdated_,
+        );
       });
       if (firstTransition) _startSessionTimer();
     }
@@ -359,9 +407,7 @@ class _CFWaitingRoomOverlayWidgetState
   @override
   Widget build(BuildContext context) {
     if (!_showNativeOverlay) {
-      return Positioned.fill(
-        child: WebViewWidget(controller: _controller),
-      );
+      return Positioned.fill(child: WebViewWidget(controller: _controller));
     }
 
     final overlay = widget.waitingOverlayBuilder != null
@@ -419,14 +465,18 @@ class _DefaultWaitingOverlay extends StatelessWidget {
               turns: hourglassTurns,
               duration: const Duration(milliseconds: 600),
               curve: Curves.easeInOut,
-              child:
-                  const Icon(Icons.hourglass_top, color: Colors.white, size: 56),
+              child: const Icon(
+                Icons.hourglass_top,
+                color: Colors.white,
+                size: 56,
+              ),
             ),
             const SizedBox(height: 24),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32),
               child: Text(
-                info.title ?? 'You are in the queue.\nThank you for your patience.',
+                info.title ??
+                    'You are in the queue.\nThank you for your patience.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.white,
@@ -457,7 +507,11 @@ class _DefaultWaitingOverlay extends StatelessWidget {
               child: Text(
                 'This page will refresh automatically.\nPlease keep the app open.',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.5),
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                  height: 1.5,
+                ),
               ),
             ),
             if (info.lastUpdated != null) ...[
@@ -506,8 +560,11 @@ class _DefaultReQueuePageState extends State<_DefaultReQueuePage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.check_circle_outline,
-                  color: Colors.greenAccent, size: 72),
+              const Icon(
+                Icons.check_circle_outline,
+                color: Colors.greenAccent,
+                size: 72,
+              ),
               const SizedBox(height: 32),
               Text(
                 widget.config.effectiveReQueueMessage,

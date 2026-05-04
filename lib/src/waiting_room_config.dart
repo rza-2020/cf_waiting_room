@@ -43,6 +43,14 @@ class WaitingRoomConfig {
   @JsonKey(name: 'reQueueDialogBtnText')
   final String? reQueueDialogBtnText;
 
+  /// BCP-47 locale tag used as the `Accept-Language` header for the queue
+  /// page request (e.g. `"zh-TW"`, `"en-US"`).
+  ///
+  /// When `null`, the system locale is used by default.
+  /// Can also be overridden per-widget via [CFWaitingRoomOverlayWidget.locale].
+  @JsonKey(name: 'locale')
+  final String? locale;
+
   WaitingRoomConfig({
     this.isEnable,
     this.queueUrl,
@@ -54,6 +62,7 @@ class WaitingRoomConfig {
     this.clearCookieOnStart,
     this.reQueueDialogMessage,
     this.reQueueDialogBtnText,
+    this.locale,
   });
 
   factory WaitingRoomConfig.fromJson(Map<String, dynamic> json) =>

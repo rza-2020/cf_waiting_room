@@ -53,6 +53,28 @@ Stack(
 )
 ```
 
+## Locale
+
+The widget sends an `Accept-Language` header with every queue page request so
+Cloudflare can serve the waiting room in the user's language.
+
+Locale resolution order:
+1. `CFWaitingRoomOverlayWidget.locale` — widget-level override (`Locale` object).
+2. `WaitingRoomConfig.locale` — Remote Config string, e.g. `"zh-TW"`.
+3. Device system locale (`PlatformDispatcher.instance.locale`).
+
+```dart
+// Override to a specific locale
+CFWaitingRoomOverlayWidget(
+  config: config,
+  locale: const Locale('zh', 'TW'), // → Accept-Language: zh-TW
+  onQueueDone: _onDone,
+)
+
+// Or via Remote Config JSON:
+// { "locale": "en-US", ... }
+```
+
 ## Custom UI
 
 ### Waiting overlay (Phase 2)
@@ -108,7 +130,8 @@ Store `WaitingRoomConfig` as a JSON string in Firebase Remote Config under the k
   "sessionTimeoutMinutes": 25,
   "clearCookieOnStart": true,
   "reQueueDialogMessage": "You have successfully purchased. Please re-queue for another attempt.",
-  "reQueueDialogBtnText": "Re-join queue"
+  "reQueueDialogBtnText": "Re-join queue",
+  "locale": "zh-TW"
 }
 ```
 

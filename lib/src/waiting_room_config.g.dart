@@ -22,6 +22,7 @@ WaitingRoomConfig _$WaitingRoomConfigFromJson(Map<String, dynamic> json) =>
       clearCookieOnStart: json['clearCookieOnStart'] as bool?,
       reQueueDialogMessage: json['reQueueDialogMessage'] as String?,
       reQueueDialogBtnText: json['reQueueDialogBtnText'] as String?,
+      locale: json['locale'] as String?,
     );
 
 Map<String, dynamic> _$WaitingRoomConfigToJson(WaitingRoomConfig instance) =>
@@ -36,4 +37,5 @@ Map<String, dynamic> _$WaitingRoomConfigToJson(WaitingRoomConfig instance) =>
       'clearCookieOnStart': instance.clearCookieOnStart,
       'reQueueDialogMessage': instance.reQueueDialogMessage,
       'reQueueDialogBtnText': instance.reQueueDialogBtnText,
+      'locale': instance.locale,
     };

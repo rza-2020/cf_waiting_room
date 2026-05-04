@@ -1,3 +1,10 @@
+## 0.2.0
+
+- feat: locale support for queue page requests (`Accept-Language` header).
+  - New `locale` parameter on `CFWaitingRoomOverlayWidget` (widget-level `Locale` override).
+  - New `locale` field in `WaitingRoomConfig` (BCP-47 string, e.g. `"zh-TW"`), ready for Firebase Remote Config.
+  - Resolution order: widget `locale` → `WaitingRoomConfig.locale` → device system locale (default).
+
 ## 0.1.0
 
 - Initial release.
