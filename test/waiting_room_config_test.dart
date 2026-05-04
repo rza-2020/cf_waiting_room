@@ -3,7 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('WaitingRoomConfig', () {
-    test('fromJson roundtrip', () {
+    // ── fromJson / toJson roundtrip ──────────────────────────────────────
+
+    test('fromJson roundtrip — core fields', () {
       final json = {
         'isEnable': true,
         'queueUrl': 'https://example.com/',
@@ -28,6 +30,42 @@ void main() {
       expect(config.reQueueDialogMessage, 'Thanks!');
       expect(config.reQueueDialogBtnText, 'OK');
     });
+
+    test('fromJson roundtrip — locale field', () {
+      final config = WaitingRoomConfig.fromJson({'locale': 'zh-TW'});
+      expect(config.locale, 'zh-TW');
+    });
+
+    test('fromJson roundtrip — overlay text fields', () {
+      final config = WaitingRoomConfig.fromJson({
+        'defaultWaitingTitle': 'You are queuing',
+        'waitingRefreshMessage': 'Page refreshes automatically.',
+        'lastUpdatedPrefix': 'Updated: ',
+      });
+      expect(config.defaultWaitingTitle, 'You are queuing');
+      expect(config.waitingRefreshMessage, 'Page refreshes automatically.');
+      expect(config.lastUpdatedPrefix, 'Updated: ');
+    });
+
+    test('toJson includes all fields', () {
+      final config = WaitingRoomConfig(
+        isEnable: true,
+        queueUrl: 'https://example.com/',
+        locale: 'en-US',
+        defaultWaitingTitle: 'Queuing…',
+        waitingRefreshMessage: 'Auto-refreshing.',
+        lastUpdatedPrefix: 'At: ',
+      );
+      final json = config.toJson();
+      expect(json['isEnable'], isTrue);
+      expect(json['queueUrl'], 'https://example.com/');
+      expect(json['locale'], 'en-US');
+      expect(json['defaultWaitingTitle'], 'Queuing…');
+      expect(json['waitingRefreshMessage'], 'Auto-refreshing.');
+      expect(json['lastUpdatedPrefix'], 'At: ');
+    });
+
+    // ── effective getters — null defaults ────────────────────────────────
 
     group('effective getters use defaults when fields are null', () {
       final empty = WaitingRoomConfig();
@@ -55,7 +93,16 @@ void main() {
       test('effectiveReQueueBtnText non-empty', () {
         expect(empty.effectiveReQueueBtnText, isNotEmpty);
       });
+
+      test('overlay text fields are null by default', () {
+        expect(empty.defaultWaitingTitle, isNull);
+        expect(empty.waitingRefreshMessage, isNull);
+        expect(empty.lastUpdatedPrefix, isNull);
+        expect(empty.locale, isNull);
+      });
     });
+
+    // ── effective getters — provided values ──────────────────────────────
 
     test('effective getters use provided values when non-empty', () {
       final config = WaitingRoomConfig(
@@ -74,8 +121,14 @@ void main() {
       expect(config.effectiveReQueueBtnText, 'Go');
     });
 
+    // ── isEnabled ────────────────────────────────────────────────────────
+
     test('isEnabled defaults to false when isEnable is null', () {
       expect(WaitingRoomConfig().isEnabled, isFalse);
+    });
+
+    test('isEnabled is true when isEnable is true', () {
+      expect(WaitingRoomConfig(isEnable: true).isEnabled, isTrue);
     });
   });
 }
