@@ -38,11 +38,11 @@ void main() {
 
     test('fromJson roundtrip — overlay text fields', () {
       final config = WaitingRoomConfig.fromJson({
-        'defaultWaitingTitle': 'You are queuing',
+        'waitingTitle': 'You are queuing',
         'waitingRefreshMessage': 'Page refreshes automatically.',
         'lastUpdatedPrefix': 'Updated: ',
       });
-      expect(config.defaultWaitingTitle, 'You are queuing');
+      expect(config.waitingTitle, 'You are queuing');
       expect(config.waitingRefreshMessage, 'Page refreshes automatically.');
       expect(config.lastUpdatedPrefix, 'Updated: ');
     });
@@ -52,7 +52,7 @@ void main() {
         isEnable: true,
         queueUrl: 'https://example.com/',
         locale: 'en-US',
-        defaultWaitingTitle: 'Queuing…',
+        waitingTitle: 'Queuing…',
         waitingRefreshMessage: 'Auto-refreshing.',
         lastUpdatedPrefix: 'At: ',
       );
@@ -60,7 +60,7 @@ void main() {
       expect(json['isEnable'], isTrue);
       expect(json['queueUrl'], 'https://example.com/');
       expect(json['locale'], 'en-US');
-      expect(json['defaultWaitingTitle'], 'Queuing…');
+      expect(json['waitingTitle'], 'Queuing…');
       expect(json['waitingRefreshMessage'], 'Auto-refreshing.');
       expect(json['lastUpdatedPrefix'], 'At: ');
     });
@@ -95,7 +95,7 @@ void main() {
       });
 
       test('overlay text fields are null by default', () {
-        expect(empty.defaultWaitingTitle, isNull);
+        expect(empty.waitingTitle, isNull);
         expect(empty.waitingRefreshMessage, isNull);
         expect(empty.lastUpdatedPrefix, isNull);
         expect(empty.locale, isNull);

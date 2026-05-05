@@ -55,9 +55,10 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
     required this.config,
     required this.onQueueDone,
     this.onSessionTimeout,
+    this.onNeedReQueue,
     this.waitingOverlayBuilder,
     this.reQueuePageBuilder,
-    this.isMock = false,
+    this.mockConfig,
     this.locale,
     this.overlayIcon,
     this.loadingIcon,
@@ -75,10 +76,20 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
   final VoidCallback onQueueDone;
 
   /// Called when [WaitingRoomConfig.sessionTimeoutMinutes] elapses after the
-  /// waiting room is confirmed active.
+  /// queue is **passed** (Phase 3 monitoring). In mock mode this is handled
+  /// internally by a dialog; in production the WebView is reloaded to detect
+  /// whether the CF queue has become active again.
   ///
-  /// Use this to show a re-queue prompt or refresh the session.
+  /// Only fired when the "No — stay in app" option is chosen in the mock
+  /// dialog, or as an extra signal alongside WebView reload in production.
   final VoidCallback? onSessionTimeout;
+
+  /// Called when the widget detects the CF queue is active again after a
+  /// session timeout (production: page reloaded and queue detected; mock:
+  /// user chose "Yes — re-queue").
+  ///
+  /// Use this to reset your app's post-queue state back to the queue screen.
+  final VoidCallback? onNeedReQueue;
 
   /// Builder for the Phase 2 native overlay shown while the user waits.
   ///
@@ -103,9 +114,21 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
   final Widget Function(BuildContext context, VoidCallback onConfirm)?
       reQueuePageBuilder;
 
-  /// When `true`, loads the bundled mock HTML asset instead of [WaitingRoomConfig.queueUrl].
-  /// Useful for development and UI testing without a live CF endpoint.
-  final bool isMock;
+  /// Mock mode configuration. When non-null, the widget loads the bundled
+  /// mock HTML instead of [WaitingRoomConfig.queueUrl], enabling full
+  /// queue-flow testing without a live CF endpoint.
+  ///
+  /// - [MockConfig.isEnable] activates the automatic pass timer.
+  /// - [MockConfig.waitDuration] controls how long until queue is simulated as passed.
+  /// - Session timeout in mock shows a dialog to choose re-queue or pass through.
+  ///
+  /// ```dart
+  /// mockConfig: MockConfig(
+  ///   isEnable: true,
+  ///   waitDuration: Duration(seconds: 10),
+  /// )
+  /// ```
+  final MockConfig? mockConfig;
 
   /// BCP-47 locale to use as the `Accept-Language` request header when
   /// loading the queue URL (e.g. `Locale('zh', 'TW')` → `"zh-TW"`).
@@ -201,10 +224,16 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     with WidgetsBindingObserver {
   late final WebViewController _controller;
 
-  bool _showNativeOverlay = false;
+  /// Phase 1 — WebView full-screen (queue detection).
+  /// Phase 2 — Native overlay + 1×1 WebView (user waiting).
+  /// Phase 3 — Invisible 1×1 WebView (session monitoring after queue passed).
+  _WPhase _phase = _WPhase.loading;
+
   double _hourglassTurns = 0;
   Timer? _rotationTimer;
   Timer? _sessionTimer;
+  Timer? _mockPassTimer;
+  DateTime? _sessionStartTime;
 
   QueueWaitingInfo _waitingInfo = const QueueWaitingInfo();
 
@@ -213,7 +242,7 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     debugPrint(
-      '[CF_WR] ▶ initState  url=${widget.config.queueUrl}  isMock=${widget.isMock}',
+      '[CF_WR] ▶ initState  url=${widget.config.queueUrl}  isMock=${widget.mockConfig?.isEnable == true}',
     );
     _initWebView();
     _rotationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -223,9 +252,11 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _showNativeOverlay) {
-      debugPrint('[CF_WR] 🔄 App resumed (native overlay) → reloading WebView');
+    if (state == AppLifecycleState.resumed &&
+        (_phase == _WPhase.waiting || _phase == _WPhase.monitoring)) {
+      debugPrint('[CF_WR] 🔄 App resumed → reloading WebView');
       _controller.reload();
+      _rearmSessionTimer();
     }
   }
 
@@ -235,14 +266,28 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     WidgetsBinding.instance.removeObserver(this);
     _rotationTimer?.cancel();
     _sessionTimer?.cancel();
+    _mockPassTimer?.cancel();
     super.dispose();
   }
 
   // ── Keyword detection ────────────────────────────────────────────────────
 
-  bool _isWaitingRoomPage(String pageUrl, String title) {
+  /// Returns true if [title] matches any configured passKeyWord.
+  /// passKeyWords always take explicit priority over queue/CF detection.
+  bool _isPassKeyWordMatch(String title) {
+    final passKws = widget.config.effectivePassKeyWords;
+    if (passKws.isEmpty) return false;
     final t = title.toLowerCase();
-    // CF structural URL signals — always checked regardless of config
+    return passKws.any((kw) => t.contains(kw.toLowerCase()));
+  }
+
+  bool _isWaitingRoomPage(String pageUrl, String title) {
+    // passKeyWords win — a matching pass title is never a waiting room
+    if (_isPassKeyWordMatch(title)) {
+      debugPrint('[CF_WR] _isWaitingRoomPage → false (passKeyWord match)');
+      return false;
+    }
+    final t = title.toLowerCase();
     if (pageUrl.contains('cdn-cgi') ||
         pageUrl.contains('waiting-room') ||
         pageUrl.contains('cf_wr')) {
@@ -257,6 +302,7 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
   }
 
   bool _isAnyCFPage(String title) {
+    if (_isPassKeyWordMatch(title)) return false;
     final t = title.toLowerCase();
     const cfMeta = [
       'cloudflare',
@@ -273,32 +319,156 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
   }
 
   bool _isRealAppPage(String title) {
+    if (_isPassKeyWordMatch(title)) return true;
     if (_isAnyCFPage(title)) return false;
-    final passKws = widget.config.effectivePassKeyWords;
-    // If no passKeyWords configured, any non-CF page is treated as the real app
-    if (passKws.isEmpty) return true;
-    final t = title.toLowerCase();
-    return passKws.any((kw) => t.contains(kw.toLowerCase()));
+    return widget.config.effectivePassKeyWords.isEmpty;
+  }
+
+  // ── Internal queue-done handler ──────────────────────────────────────────
+
+  /// Called when the queue is passed. Transitions to monitoring phase,
+  /// notifies the host, and starts the session timer.
+  void _handleQueueDone() {
+    if (!mounted) return;
+    debugPrint('[CF_WR] ✅ Queue passed → monitoring phase + onQueueDone()');
+    _mockPassTimer?.cancel();
+    setState(() {
+      _phase = _WPhase.monitoring;
+      _waitingInfo = const QueueWaitingInfo();
+    });
+    _startSessionTimer();
+    widget.onQueueDone();
   }
 
   // ── Session timer ────────────────────────────────────────────────────────
 
   void _startSessionTimer() {
-    final minutes = widget.config.sessionTimeoutMinutes;
-    if (minutes == null || minutes <= 0) return;
+    final timeout = widget.config.effectiveSessionTimeout;
+    if (timeout == null || timeout <= Duration.zero) return;
     _sessionTimer?.cancel();
-    debugPrint('[CF_WR] ⏱ Session timer started — ${minutes}min');
-    _sessionTimer = Timer(Duration(minutes: minutes), () {
-      debugPrint('[CF_WR] ⏱ Session timeout fired');
-      if (mounted) widget.onSessionTimeout?.call();
+    _sessionStartTime = DateTime.now();
+    debugPrint('[CF_WR] ⏱ Session timer started — ${timeout.inSeconds}s');
+    _sessionTimer = Timer(timeout, _onSessionTimerFired);
+  }
+
+  void _rearmSessionTimer() {
+    final timeout = widget.config.effectiveSessionTimeout;
+    final start = _sessionStartTime;
+    if (timeout == null || timeout <= Duration.zero || start == null) return;
+    final elapsed = DateTime.now().difference(start);
+    final remaining = timeout - elapsed;
+    if (remaining <= Duration.zero) {
+      debugPrint('[CF_WR] ⏱ Session timed out while backgrounded → firing now');
+      _onSessionTimerFired();
+    } else {
+      _sessionTimer?.cancel();
+      debugPrint(
+          '[CF_WR] ⏱ Session timer re-armed — ${remaining.inSeconds}s remaining');
+      _sessionTimer = Timer(remaining, _onSessionTimerFired);
+    }
+  }
+
+  void _onSessionTimerFired() {
+    debugPrint('[CF_WR] ⏱ Session timeout fired (phase=$_phase)');
+    if (!mounted) return;
+    if (widget.mockConfig?.isEnable == true) {
+      _showMockSessionTimeoutDialog();
+    } else {
+      // Production: reload WebView — _onPageFinished will detect queue if needed
+      debugPrint('[CF_WR] ⏱ Reloading WebView to check queue status');
+      _controller.reload();
+      widget.onSessionTimeout?.call();
+    }
+  }
+
+  /// Mock-only: asks the user whether to re-queue or stay in the app.
+  void _showMockSessionTimeoutDialog() {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Session Check (Mock)'),
+        content: Text(
+          'Session timeout reached (${widget.config.effectiveSessionTimeout?.inSeconds}s).\n\nDo you need to queue again?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              // Restart session timer for the next cycle
+              _startSessionTimer();
+              widget.onSessionTimeout?.call();
+            },
+            child: const Text('No — stay in app'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              widget.onNeedReQueue?.call();
+              _resetMock();
+            },
+            child: const Text('Yes — re-queue'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Mock helpers ─────────────────────────────────────────────────────────
+
+  /// Resets to Phase 1 and reloads the mock queue HTML.
+  Future<void> _resetMock() async {
+    debugPrint('[CF_WR] 🎭 Mock reset → Phase 1');
+    _sessionTimer?.cancel();
+    _sessionStartTime = null;
+    _mockPassTimer?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _phase = _WPhase.loading;
+      _waitingInfo = const QueueWaitingInfo();
     });
+    await _loadMockHtml();
+  }
+
+  Future<void> _loadMockHtml() async {
+    final queueUrl = widget.config.queueUrl ?? '';
+    final acceptLanguage = _resolveLocale().toLanguageTag();
+    try {
+      final html = await rootBundle.loadString(
+        'packages/cf_waiting_room/assets/mock_waiting_room.html',
+      );
+      await _controller.loadHtmlString(html, baseUrl: queueUrl);
+    } catch (_) {
+      if (queueUrl.isNotEmpty) {
+        _controller.loadRequest(
+          Uri.parse(queueUrl),
+          headers: {'Accept-Language': acceptLanguage},
+        );
+      }
+    }
+    _startMockPassTimer();
+  }
+
+  void _startMockPassTimer() {
+    final mc = widget.mockConfig;
+    if (mc == null || !mc.isEnable) return;
+    _mockPassTimer?.cancel();
+    debugPrint('[CF_WR] 🎭 Mock pass timer — ${mc.waitDuration.inSeconds}s');
+    _mockPassTimer = Timer(mc.waitDuration, _simulateMockPass);
+  }
+
+  void _simulateMockPass() {
+    final passKws = widget.config.effectivePassKeyWords;
+    final passTitle = passKws.isNotEmpty ? passKws.first : 'app';
+    debugPrint('[CF_WR] 🎭 Mock: simulating pass with title="$passTitle"');
+    _controller.loadHtmlString(
+      '<html lang=""><head><title>$passTitle</title></head>'
+      '<body><h1>Mock — Queue Passed</h1></body></html>',
+    );
   }
 
   // ── Locale resolution ────────────────────────────────────────────────────
 
-  /// Returns the effective [Locale] to use as the `Accept-Language` header.
-  ///
-  /// Priority: widget.locale → config.locale → system locale.
   Locale _resolveLocale() {
     if (widget.locale != null) return widget.locale!;
     final cfgLocale = widget.config.locale;
@@ -319,7 +489,7 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
         'FlutterQueueBridge',
         onMessageReceived: (msg) {
           debugPrint('[CF_WR] 📩 JS bridge: "${msg.message}"');
-          if (msg.message == 'done') widget.onQueueDone();
+          if (msg.message == 'done') _handleQueueDone();
         },
       )
       ..setNavigationDelegate(
@@ -330,7 +500,7 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
           onWebResourceError: (error) {
             if (error.isForMainFrame == true) {
               debugPrint('[CF_WR] ❌ Main-frame error → onQueueDone()');
-              widget.onQueueDone();
+              _handleQueueDone();
             }
           },
         ),
@@ -348,20 +518,8 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     final queueUrl = widget.config.queueUrl ?? '';
     final acceptLanguage = _resolveLocale().toLanguageTag();
     debugPrint('[CF_WR] 🌐 Accept-Language: $acceptLanguage');
-    if (widget.isMock) {
-      try {
-        final html = await rootBundle.loadString(
-          'packages/cf_waiting_room/assets/mock_waiting_room.html',
-        );
-        await _controller.loadHtmlString(html, baseUrl: queueUrl);
-      } catch (_) {
-        if (queueUrl.isNotEmpty) {
-          _controller.loadRequest(
-            Uri.parse(queueUrl),
-            headers: {'Accept-Language': acceptLanguage},
-          );
-        }
-      }
+    if (widget.mockConfig?.isEnable == true) {
+      await _loadMockHtml();
     } else if (queueUrl.isNotEmpty) {
       _controller.loadRequest(
         Uri.parse(queueUrl),
@@ -375,28 +533,51 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     final isWaiting = _isWaitingRoomPage(pageUrl, title);
     debugPrint(
       '[CF_WR] ✔ onPageFinished  url="$pageUrl"  title="$title"'
-      '  isWaiting=$isWaiting  nativeOverlay=$_showNativeOverlay',
+      '  isWaiting=$isWaiting  phase=$_phase',
     );
 
-    if (!isWaiting && !_showNativeOverlay) {
-      if (title.isEmpty || _isAnyCFPage(title)) return;
-      debugPrint('[CF_WR] ✅ Not a queue page (Phase 1) → onQueueDone()');
-      widget.onQueueDone();
-      return;
-    }
+    switch (_phase) {
+      case _WPhase.loading:
+        // Phase 1: full-screen WebView
+        if (!isWaiting) {
+          if (title.isEmpty || _isAnyCFPage(title)) return;
+          debugPrint('[CF_WR] ✅ Not a queue page (Phase 1) → done');
+          _handleQueueDone();
+          return;
+        }
+        // Queue detected → transition to Phase 2
+        _transitionToWaiting(title);
 
-    if (!isWaiting) {
-      if (title.isNotEmpty && _isRealAppPage(title)) {
-        debugPrint('[CF_WR] ✅ Queue passed → onQueueDone()');
-        widget.onQueueDone();
-      }
-      return;
-    }
+      case _WPhase.waiting:
+        // Phase 2: native overlay shown
+        if (!isWaiting) {
+          if (title.isNotEmpty && _isRealAppPage(title)) {
+            debugPrint('[CF_WR] ✅ Queue passed (Phase 2) → done');
+            _handleQueueDone();
+          }
+          return;
+        }
+        // Still waiting — update info
+        _transitionToWaiting(title);
 
-    // Waiting room confirmed — extract CF content
+      case _WPhase.monitoring:
+        // Phase 3: invisible monitoring after queue passed
+        if (isWaiting) {
+          // Queue came back! Return to Phase 2 and notify host
+          debugPrint('[CF_WR] ⚠ Queue detected in monitoring → re-queue');
+          _sessionTimer?.cancel();
+          _sessionStartTime = null;
+          _transitionToWaiting(title);
+          widget.onNeedReQueue?.call();
+        }
+      // Not waiting → still clear, do nothing
+    }
+  }
+
+  /// Extracts CF content and transitions to Phase 2 (native overlay).
+  Future<void> _transitionToWaiting(String pageTitle) async {
     final etaId = widget.config.effectiveEtaId;
     final lastUpdatedId = widget.config.effectiveLastUpdatedId;
-
     String? title_, eta_, lastUpdated_;
     try {
       final raw = await _controller.runJavaScriptReturningResult(
@@ -423,18 +604,15 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
       lastUpdated_ = (raw as String).replaceAll(RegExp(r'^"|"$'), '').trim();
       if (lastUpdated_.isEmpty) lastUpdated_ = null;
     } catch (_) {}
-
     if (mounted) {
-      final firstTransition = !_showNativeOverlay;
       setState(() {
-        _showNativeOverlay = true;
+        _phase = _WPhase.waiting;
         _waitingInfo = QueueWaitingInfo(
           title: title_,
           eta: eta_,
           lastUpdated: lastUpdated_,
         );
       });
-      if (firstTransition) _startSessionTimer();
     }
   }
 
@@ -442,16 +620,32 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
 
   @override
   Widget build(BuildContext context) {
-    if (!_showNativeOverlay) {
+    // Phase 3: invisible keeper — just keep the WebView alive
+    if (_phase == _WPhase.monitoring) {
+      return Positioned(
+        left: 0,
+        top: 0,
+        width: 1,
+        height: 1,
+        child: Opacity(
+          opacity: 0.01,
+          child: WebViewWidget(controller: _controller),
+        ),
+      );
+    }
+
+    // Phase 1: full-screen WebView
+    if (_phase == _WPhase.loading) {
       return Positioned.fill(child: WebViewWidget(controller: _controller));
     }
 
+    // Phase 2: native overlay
     final overlay = widget.waitingOverlayBuilder != null
         ? widget.waitingOverlayBuilder!(context, _waitingInfo)
         : _DefaultWaitingOverlay(
             info: _waitingInfo,
             hourglassTurns: _hourglassTurns,
-            defaultWaitingTitle: widget.config.defaultWaitingTitle,
+            defaultWaitingTitle: widget.config.waitingTitle,
             waitingRefreshMessage: widget.config.waitingRefreshMessage,
             lastUpdatedPrefix: widget.config.lastUpdatedPrefix,
             overlayIcon: widget.overlayIcon,
@@ -464,8 +658,6 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     return Positioned.fill(
       child: Stack(
         children: [
-          // 1×1px WebView kept alive. Opacity(0.01) prevents some Android
-          // devices from suspending a fully-invisible WebView.
           Positioned(
             left: 0,
             top: 0,
@@ -481,6 +673,14 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
       ),
     );
   }
+}
+
+// ── Phase enum ────────────────────────────────────────────────────────────
+
+enum _WPhase {
+  loading, // Phase 1 — full-screen WebView
+  waiting, // Phase 2 — native overlay + 1×1 WebView
+  monitoring, // Phase 3 — invisible 1×1 WebView (post-pass session monitoring)
 }
 
 // ── Default built-in overlays ─────────────────────────────────────────────
@@ -507,13 +707,8 @@ class _DefaultWaitingOverlay extends StatelessWidget {
   final String? defaultWaitingTitle;
   final String? waitingRefreshMessage;
   final String? lastUpdatedPrefix;
-
-  /// Brand logo widget shown at the top of the overlay.
   final Widget? overlayIcon;
-
-  /// Widget that replaces the animated hourglass spinner.
   final Widget? loadingIcon;
-
   final Color? overlayBackgroundColor;
   final TextStyle? titleStyle;
   final TextStyle? refreshMessageStyle;
@@ -526,13 +721,10 @@ class _DefaultWaitingOverlay extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // ── Brand logo (optional) ──────────────────────────────────
             if (overlayIcon != null) ...[
               overlayIcon!,
               const SizedBox(height: 20),
             ],
-
-            // ── Spinner / loading icon ─────────────────────────────────
             loadingIcon ??
                 AnimatedRotation(
                   turns: hourglassTurns,
@@ -544,13 +736,12 @@ class _DefaultWaitingOverlay extends StatelessWidget {
                     size: 56,
                   ),
                 ),
-
             const SizedBox(height: 24),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32),
               child: Text(
-                info.title ??
-                    defaultWaitingTitle ??
+                defaultWaitingTitle ??
+                    info.title ??
                     'You are in the queue.\nThank you for your patience.',
                 textAlign: TextAlign.center,
                 style: titleStyle ??

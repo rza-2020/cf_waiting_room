@@ -21,14 +21,14 @@ import 'package:flutter_test/flutter_teststs', () {
         isEnable: true,
         queueUrl: 'https://example.com/',
         locale: 'zh-TW',
-        defaultWaitingTitle: '排隊中',
+        waitingTitle: '排隊中',
         waitingRefreshMessage: '自動刷新',
         lastUpdatedPrefix: '更新：',
       );
       expect(config.isEnabled, isTrue);
       expect(config.queueUrl, 'https://example.com/');
       expect(config.locale, 'zh-TW');
-      expect(config.defaultWaitingTitle, '排隊中');
+      expect(config.waitingTitle, '排隊中');
       expect(config.waitingRefreshMessage, '自動刷新');
       expect(config.lastUpdatedPrefix, '更新：');
     });

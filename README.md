@@ -4,124 +4,195 @@
 > affiliated with, endorsed by, or supported by Cloudflare, Inc.
 > Cloudflare® is a registered trademark of Cloudflare, Inc.
 
-An unofficial Flutter widget that gates your app behind a [Cloudflare Waiting Room](https://developers.cloudflare.com/waiting-room/), with a two-phase WebView/native-overlay approach and full UI customisation.
+An unofficial Flutter widget that gates your app behind a [Cloudflare Waiting Room](https://developers.cloudflare.com/waiting-room/).
 
-## Features
+---
 
-- **Two-phase display** — shows the live CF queue page immediately (Phase 1), then switches to a native overlay while keeping the WebView alive at 1×1 px so CF's auto-refresh JS keeps the session cookie valid (Phase 2).
-- **Dynamic keyword detection** — queue/pass keywords and CSS selectors are driven by `WaitingRoomConfig`, ready for Firebase Remote Config.
-- **Session timeout callback** — fires `onSessionTimeout` after a configurable number of minutes.
-- **Force re-queue** — `forceReQueue()` shows a non-dismissible page, clears CF cookies, then calls your callback.
-- **Custom UI builders** — supply `waitingOverlayBuilder` and `reQueuePageBuilder` to render your own brand UI.
-- **Default overlay customisation** — swap the spinner/logo with any `Widget` and adjust colours and text styles without writing a full custom builder.
-- **Locale support** — sends `Accept-Language` header; defaults to system locale, overridable per-widget or via Remote Config.
-- **訪特權 mode** — set `clearCookieOnStart: false` to skip cookie clearing (skip-queue pass).
-- **Dev mock** — `isMock: true` loads a bundled HTML page with a "simulate done" button.
+## How it works — the user journey
+
+Imagine your app is a ticket-sale event backed by a Cloudflare Waiting Room.
+
+```
+User opens app
+      │
+      ▼
+┌─────────────────────────────┐
+│  Phase 1 – Live CF page     │  Full-screen WebView.
+│  (WebView full-screen)      │  User sees the real CF queue page immediately.
+└────────────┬────────────────┘
+             │ CF confirms queue active
+             ▼
+┌─────────────────────────────┐
+│  Phase 2 – Native overlay   │  Your brand UI replaces the raw CF page.
+│  (overlay + 1×1 WebView)    │  The tiny invisible WebView keeps CF's JS
+└────────────┬────────────────┘  running so the session cookie stays valid.
+             │ CF redirects → pass page (title contains passKeyWord)
+             ▼
+┌─────────────────────────────┐
+│  Phase 3 – Silent monitor   │  onQueueDone() fires — your app is shown.
+│  (invisible 1×1 WebView)    │  A session timer continues ticking in the
+└────────────┬────────────────┘  background to detect re-queue situations.
+             │ sessionTimeout fires
+             ▼
+      WebView reloads silently
+      ┌── queue active? ──▶ onNeedReQueue() → back to Phase 2
+      └── still clear?  ──▶ onSessionTimeout() → timer restarts
+```
+
+---
 
 ## Installation
 
 ```yaml
 dependencies:
-  cf_waiting_room: ^0.2.2
+  cf_waiting_room: ^0.3.0
 ```
 
-For local development inside a monorepo:
+---
 
-```yaml
-dependencies:
-  cf_waiting_room:
-    path: packages/cf_waiting_room
-```
-
-## Basic usage
-
-Wrap the widget in a `Stack` — it returns `Positioned` children internally.
+## Quick start
 
 ```dart
-Stack(
-  children: [
-    CFWaitingRoomOverlayWidget(
-      config: WaitingRoomConfig(
-        isEnable: true,
-        queueUrl: 'https://your-site.com/',
-        queueKeyWord: ['waiting', 'queue'],
-        passKeyWord: ['myapp'],
-        sessionTimeoutMinutes: 25,
-      ),
-      onQueueDone: () => setState(() => _queueDone = true),
-      onSessionTimeout: () => _showTimeoutDialog(),
-    ),
-  ],
+class _GatePageState extends State<_GatePage> {
+  bool _queueDone = false;
+
+  final _config = WaitingRoomConfig(
+    isEnable: true,
+    queueUrl: 'https://your-site.com/',
+    queueKeyWord: ['waiting', 'queue'],
+    passKeyWord: ['myapp'],           // substring of the real app page title
+    sessionTimeoutSeconds: 1500,     // 25 min post-pass monitoring interval
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        if (_queueDone) YourAppContent(),
+        CFWaitingRoomOverlayWidget(
+          config: _config,
+          onQueueDone: () => setState(() => _queueDone = true),
+          onNeedReQueue: () => setState(() => _queueDone = false),
+          onSessionTimeout: () => _showSessionExpiredBanner(),
+        ),
+      ],
+    );
+  }
+}
+```
+
+---
+
+## Session timeout
+
+`sessionTimeoutSeconds` / `sessionTimeoutMinutes` / `sessionTimeoutHours`
+starts counting **after the queue is passed** (Phase 3). When it fires the
+WebView reloads silently to re-check whether the CF queue is back.
+
+```dart
+WaitingRoomConfig(
+  sessionTimeoutSeconds: 1500,  // 25 minutes
+  // or: sessionTimeoutMinutes: 25,
+  // or: sessionTimeoutHours: 1,
 )
 ```
 
-## Default overlay customisation
+---
 
-Customise the built-in Phase 2 overlay without supplying a full `waitingOverlayBuilder`.
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `overlayIcon` | `Widget?` | *(none)* | Brand logo shown **above** the spinner |
-| `loadingIcon` | `Widget?` | Animated hourglass | Replaces the `AnimatedRotation` spinner slot |
-| `overlayBackgroundColor` | `Color?` | `Color(0xFF1A2C45)` | Overlay background colour |
-| `titleStyle` | `TextStyle?` | white, 20 px, bold | In-queue title text style |
-| `refreshMessageStyle` | `TextStyle?` | white70, 13 px | "Refresh automatically" line text style |
+## Mock mode — test the full flow without a live CF endpoint
 
 ```dart
 CFWaitingRoomOverlayWidget(
-  config: config,
+  config: _config,
+  mockConfig: MockConfig(
+    isEnable: true,
+    waitDuration: Duration(seconds: 10), // auto-pass after 10 s
+  ),
+  onQueueDone: () => setState(() => _queueDone = true),
+  onNeedReQueue: () => setState(() => _queueDone = false),
+  onSessionTimeout: () => _showBanner('Session expired'),
+)
+```
+
+**Mock timeline** (with `sessionTimeoutSeconds: 15`, `waitDuration: 10s`):
+
+| t | Event |
+|---|---|
+| 0 s | Mock queue HTML loads → Phase 1 → Phase 2 overlay |
+| 10 s | Auto-pass → `onQueueDone()` fires, your app appears (Phase 3) |
+| 25 s (10+15) | Dialog: **"Yes — re-queue"** → `onNeedReQueue()` + reset to Phase 1 |
+| | **"No — stay in app"** → `onSessionTimeout()` + timer restarts |
+
+---
+
+## Force re-queue (e.g. after a successful purchase)
+
+```dart
+await CFWaitingRoomOverlayWidget.forceReQueue(
+  context,
+  config: _config,
+  onConfirm: () => setState(() => _queueDone = false),
+);
+```
+
+---
+
+## Customise the default overlay
+
+No full custom builder needed — pass widgets and styles directly:
+
+```dart
+CFWaitingRoomOverlayWidget(
+  config: _config,
   onQueueDone: _onDone,
-  // Brand logo at the top
   overlayIcon: Image.asset('assets/logo.png', height: 64),
-  // Custom spinner (Lottie, GIF, SvgPicture, etc.)
   loadingIcon: Image.asset('assets/spinner.gif', width: 56, height: 56),
   overlayBackgroundColor: const Color(0xFF0D1B2A),
-  titleStyle: const TextStyle(color: Colors.amber, fontSize: 22, fontWeight: FontWeight.w800),
+  titleStyle: const TextStyle(color: Colors.amber, fontSize: 22),
+  refreshMessageStyle: const TextStyle(color: Colors.white60, fontSize: 14),
 )
 ```
 
-The text labels for the default overlay can be driven from Firebase Remote Config via `WaitingRoomConfig`:
+Text labels driven from `WaitingRoomConfig` (Remote Config-friendly):
 
-| Config field | Default value |
+| Config field | Description |
 |---|---|
-| `defaultWaitingTitle` | `'You are in the queue.\nThank you for your patience.'` |
-| `waitingRefreshMessage` | `'This page will refresh automatically.\nPlease keep the app open.'` |
-| `lastUpdatedPrefix` | `'Last updated: '` |
+| `waitingTitle` | Overrides CF page `<h1>` — always shown |
+| `waitingRefreshMessage` | Body copy below the ETA |
+| `lastUpdatedPrefix` | Prefix before the last-updated timestamp |
 
-## Locale
+---
 
-The widget sends an `Accept-Language` header with every queue page request so
-Cloudflare can serve the waiting room in the user's language.
+## Locale — `Accept-Language` header
 
 Resolution order:
-1. `CFWaitingRoomOverlayWidget.locale` — widget-level `Locale` override.
-2. `WaitingRoomConfig.locale` — Remote Config BCP-47 string, e.g. `"zh-TW"`.
-3. Device system locale (`PlatformDispatcher.instance.locale`).
+1. `CFWaitingRoomOverlayWidget.locale` — widget-level `Locale` override
+2. `WaitingRoomConfig.locale` — Remote Config BCP-47 string, e.g. `"zh-HK"`
+3. Device system locale (`PlatformDispatcher.instance.locale`)
 
 ```dart
-// Widget-level override
 CFWaitingRoomOverlayWidget(
-  config: config,
-  locale: const Locale('zh', 'TW'), // → Accept-Language: zh-TW
+  config: _config,
+  locale: const Locale('zh', 'HK'),
   onQueueDone: _onDone,
 )
 ```
 
-## Custom UI
+---
 
-### Waiting overlay (Phase 2)
+## Custom UI builders
+
+### Phase 2 waiting overlay
 
 ```dart
 CFWaitingRoomOverlayWidget(
-  config: config,
+  config: _config,
   onQueueDone: _onDone,
-  waitingOverlayBuilder: (context, info) {
-    return MyWaitingScreen(
-      title: info.title ?? 'You are in the queue',
-      eta: info.eta,
-      lastUpdated: info.lastUpdated,
-    );
-  },
+  waitingOverlayBuilder: (context, info) => MyWaitingScreen(
+    title: info.title,
+    eta: info.eta,
+    lastUpdated: info.lastUpdated,
+  ),
 )
 ```
 
@@ -129,27 +200,16 @@ CFWaitingRoomOverlayWidget(
 
 ```dart
 CFWaitingRoomOverlayWidget(
-  config: config,
+  config: _config,
   onQueueDone: _onDone,
-  reQueuePageBuilder: (context, onConfirm) {
-    return MyReQueuePage(onConfirm: onConfirm);
-  },
+  reQueuePageBuilder: (context, onConfirm) =>
+      MyReQueuePage(onConfirm: onConfirm),
 )
 ```
 
-### Trigger force re-queue (e.g. after a successful purchase)
-
-```dart
-await CFWaitingRoomOverlayWidget.forceReQueue(
-  context,
-  config: waitingRoomConfig,
-  onConfirm: () => _resetToQueuePhase(),
-);
-```
+---
 
 ## Firebase Remote Config integration
-
-Store `WaitingRoomConfig` as a JSON string in Firebase Remote Config under the key `waitingRoomConfig`:
 
 ```json
 {
@@ -159,18 +219,16 @@ Store `WaitingRoomConfig` as a JSON string in Firebase Remote Config under the k
   "passKeyWord": ["myapp"],
   "etaId": "waitTime",
   "lastUpdatedId": "last-updated",
-  "sessionTimeoutMinutes": 25,
+  "sessionTimeoutSeconds": 1500,
   "clearCookieOnStart": true,
-  "reQueueDialogMessage": "You have successfully purchased. Please re-queue for another attempt.",
-  "reQueueDialogBtnText": "Re-join queue",
-  "locale": "zh-TW",
-  "defaultWaitingTitle": "您正在排隊中，感謝耐心等候。",
-  "waitingRefreshMessage": "本頁將自動更新，請保持 App 開啟。",
-  "lastUpdatedPrefix": "最後更新："
+  "locale": "zh-HK",
+  "waitingTitle": "您正在排隊中，感謝耐心等候。",
+  "waitingRefreshMessage": "本頁將自動更新，請勿關閉應用程式。",
+  "lastUpdatedPrefix": "最後更新：",
+  "reQueueDialogMessage": "恭喜您搶購成功！若想再次購買，請重新排隊。",
+  "reQueueDialogBtnText": "確定並重新排隊"
 }
 ```
-
-Then parse it in your config layer:
 
 ```dart
 final raw = remoteConfig.getString('waitingRoomConfig');
@@ -179,10 +237,19 @@ final config = raw.isNotEmpty
     : WaitingRoomConfig(isEnable: false);
 ```
 
+---
+
+## 訪特權 mode (skip-queue pass)
+
+Set `clearCookieOnStart: false` to preserve existing CF cookies so a returning
+user skips the queue if their session is still valid.
+
+---
+
 ## Platform support
 
 | Platform | Support |
 |----------|---------|
 | Android  | ✅ |
 | iOS      | ✅ |
-| Web      | ❌ (webview_flutter not supported on Web) |
+| Web      | ❌ (`webview_flutter` not supported on Web) |

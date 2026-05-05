@@ -2,6 +2,39 @@ import 'package:json_annotation/json_annotation.dart';
 
 part 'waiting_room_config.g.dart';
 
+// ── MockConfig ────────────────────────────────────────────────────────────
+
+/// Configuration for the built-in mock/development mode.
+///
+/// When [isEnable] is `true` and the widget is running with `isMock: true`,
+/// a timer fires after [waitDuration] and auto-simulates a successful queue
+/// pass, letting you test the full queue → app transition without a live CF
+/// endpoint.
+class MockConfig {
+  /// Activates the automatic pass simulation.
+  final bool isEnable;
+
+  /// How long to wait before simulating a queue pass.
+  /// Defaults to 30 seconds.
+  final Duration waitDuration;
+
+  const MockConfig({
+    this.isEnable = false,
+    this.waitDuration = const Duration(seconds: 30),
+  });
+
+  factory MockConfig.fromJson(Map<String, dynamic> json) => MockConfig(
+        isEnable: json['isEnable'] as bool? ?? false,
+        waitDuration:
+            Duration(seconds: (json['waitSeconds'] as num?)?.toInt() ?? 30),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'isEnable': isEnable,
+        'waitSeconds': waitDuration.inSeconds,
+      };
+}
+
 @JsonSerializable()
 class WaitingRoomConfig {
   @JsonKey(name: 'isEnable')
@@ -27,8 +60,19 @@ class WaitingRoomConfig {
   final String? lastUpdatedId;
 
   /// Minutes after queue is confirmed before [onSessionTimeout] fires.
+  /// Prefer [sessionTimeoutSeconds] or [sessionTimeoutHours] for finer control.
   @JsonKey(name: 'sessionTimeoutMinutes')
   final int? sessionTimeoutMinutes;
+
+  /// Seconds after queue is confirmed before [onSessionTimeout] fires.
+  /// Takes priority over [sessionTimeoutMinutes] and [sessionTimeoutHours].
+  @JsonKey(name: 'sessionTimeoutSeconds')
+  final int? sessionTimeoutSeconds;
+
+  /// Hours after queue is confirmed before [onSessionTimeout] fires.
+  /// Lowest priority — used only when neither seconds nor minutes are set.
+  @JsonKey(name: 'sessionTimeoutHours')
+  final int? sessionTimeoutHours;
 
   /// 訪特權 Off → false: skip clearing cookies/cache on widget init.
   /// Defaults to true (always clear).
@@ -53,12 +97,14 @@ class WaitingRoomConfig {
 
   // ── Default overlay text (drivable from Remote Config) ──────────────────
 
-  /// Fallback title shown in the default Phase 2 overlay when the CF page
-  /// does not supply an `<h1>` heading.
+  /// Title shown in the default Phase 2 overlay.
   ///
-  /// Defaults to `'You are in the queue.\nThank you for your patience.'`
-  @JsonKey(name: 'defaultWaitingTitle')
-  final String? defaultWaitingTitle;
+  /// When set, this **overrides** the `<h1>` heading scraped from the CF page,
+  /// making it useful for localisation or branding even in mock mode.
+  ///
+  /// Falls back to the scraped `<h1>`, then to the built-in English default.
+  @JsonKey(name: 'waitingTitle')
+  final String? waitingTitle;
 
   /// Body message shown below the ETA in the default Phase 2 overlay.
   ///
@@ -80,11 +126,13 @@ class WaitingRoomConfig {
     this.etaId,
     this.lastUpdatedId,
     this.sessionTimeoutMinutes,
+    this.sessionTimeoutSeconds,
+    this.sessionTimeoutHours,
     this.clearCookieOnStart,
     this.reQueueDialogMessage,
     this.reQueueDialogBtnText,
     this.locale,
-    this.defaultWaitingTitle,
+    this.waitingTitle,
     this.waitingRefreshMessage,
     this.lastUpdatedPrefix,
   });
@@ -95,6 +143,22 @@ class WaitingRoomConfig {
   Map<String, dynamic> toJson() => _$WaitingRoomConfigToJson(this);
 
   bool get isEnabled => isEnable ?? false;
+
+  /// Effective session timeout as a [Duration].
+  ///
+  /// Resolution order: [sessionTimeoutSeconds] → [sessionTimeoutMinutes] → [sessionTimeoutHours].
+  Duration? get effectiveSessionTimeout {
+    if (sessionTimeoutSeconds != null && sessionTimeoutSeconds! > 0) {
+      return Duration(seconds: sessionTimeoutSeconds!);
+    }
+    if (sessionTimeoutMinutes != null && sessionTimeoutMinutes! > 0) {
+      return Duration(minutes: sessionTimeoutMinutes!);
+    }
+    if (sessionTimeoutHours != null && sessionTimeoutHours! > 0) {
+      return Duration(hours: sessionTimeoutHours!);
+    }
+    return null;
+  }
 
   List<String> get effectiveQueueKeyWords => (queueKeyWord?.isNotEmpty == true)
       ? queueKeyWord!
