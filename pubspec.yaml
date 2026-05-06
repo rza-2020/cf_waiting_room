@@ -3,7 +3,7 @@ description: >-
   Unofficial Flutter widget for integrating with Cloudflare Waiting Room —
   WebView-based queue gate with native overlay, session timeout, force
   re-queue flow, and custom UI builders.
-version: 0.4.1
+version: 0.3.0
 homepage: https://github.com/rza-2020/cf_waiting_room
 repository: https://github.com/rza-2020/cf_waiting_room
 issue_tracker: https://github.com/rza-2020/cf_waiting_room/issues
