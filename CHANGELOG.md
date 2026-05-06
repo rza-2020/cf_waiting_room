@@ -1,3 +1,14 @@
+## 0.3.1
+
+- fix: main-frame WebView errors in Phase 2/3 no longer incorrectly fire
+  `onQueueDone()`. Error handling is now phase-aware:
+  - **Phase 1**: error → `onQueueDone()` (graceful fallback, existing behaviour).
+  - **Phase 2**: error → stay in overlay (CF's JS will auto-retry).
+  - **Phase 3**: error → restart session timer; never treated as a queue pass.
+  Previously, a network hiccup after the non-enterprise cookie-clear reload would
+  trigger `onQueueDone()` and silently reset the session timer as if the queue
+  had been re-passed.
+
 ## 0.3.0
 
 - **breaking:** `sessionTimeoutSeconds` and `sessionTimeoutHours` removed from

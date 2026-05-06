@@ -793,9 +793,33 @@ class CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
           onNavigationRequest: (_) => NavigationDecision.navigate,
           onPageFinished: _onPageFinished,
           onWebResourceError: (error) {
-            if (error.isForMainFrame == true) {
-              debugPrint('[CF_WR] ❌ Main-frame error → onQueueDone()');
-              _handleQueueDone();
+            if (error.isForMainFrame != true) return;
+            debugPrint(
+              '[CF_WR] ❌ Main-frame error  code=${error.errorCode}'
+              '  phase=$_phase  url=${error.url}',
+            );
+            switch (_phase) {
+              case _WPhase.loading:
+                // Phase 1: can't reach the queue page — treat as "no queue",
+                // let the app through as a graceful fallback.
+                debugPrint(
+                    '[CF_WR] ❌ Phase 1 main-frame error → onQueueDone()');
+                _handleQueueDone();
+              case _WPhase.waiting:
+                // Phase 2: network blip while waiting — stay in overlay,
+                // CF's own refresh JS will retry automatically.
+                debugPrint(
+                    '[CF_WR] ⚠ Phase 2 main-frame error — staying in overlay');
+              case _WPhase.monitoring:
+                // Phase 3: network error after revoke/clear reload — do NOT
+                // treat as "queue passed". Restart the session timer so we
+                // check again after the next interval.
+                debugPrint(
+                  '[CF_WR] ⚠ Phase 3 main-frame error — '
+                  'restarting session timer (not treating as pass)',
+                );
+                _sessionStartTime = null;
+                _startSessionTimer();
             }
           },
         ),
