@@ -422,7 +422,7 @@ void main() {
     );
 
     testWidgets(
-      '1.7  Main-frame WebView error → onQueueDone fires (error fallback)',
+      '1.7  Phase 1 main-frame error → onQueueDone fires (graceful fallback)',
       (tester) async {
         bool queueDone = false;
 
@@ -436,7 +436,7 @@ void main() {
           onQueueDone: () => queueDone = true,
         );
 
-        // Fire a main-frame resource error through the nav delegate.
+        // Fire a main-frame resource error while still in Phase 1.
         platform.latestDelegate!.onWebResourceErrorCallback?.call(
           const WebResourceError(
             errorCode: -2,
@@ -448,7 +448,95 @@ void main() {
 
         expect(queueDone, isTrue,
             reason:
-                'Main-frame error must call onQueueDone so the app is not stuck');
+                'Phase 1 main-frame error must call onQueueDone so the app is not stuck');
+      },
+    );
+
+    testWidgets(
+      '1.8  Phase 2 main-frame error → overlay stays, onQueueDone NOT fired',
+      (tester) async {
+        int queueDoneCalls = 0;
+
+        final platform = await _pumpWidget(
+          tester,
+          config: WaitingRoomConfig(
+            isEnable: true,
+            queueUrl: 'https://test/',
+            queueKeyWord: ['waiting'],
+            passKeyWord: ['myapp'],
+          ),
+          onQueueDone: () => queueDoneCalls++,
+        );
+
+        // Enter Phase 2 (queue detected).
+        await platform.latestController!.simulatePageLoad('Waiting Room');
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('cf_wr_overlay')), findsOneWidget);
+        expect(queueDoneCalls, 0);
+
+        // Fire a main-frame error while in Phase 2 (e.g. CF page blipped).
+        platform.latestDelegate!.onWebResourceErrorCallback?.call(
+          const WebResourceError(
+            errorCode: -2,
+            description: 'net::ERR_INTERNET_DISCONNECTED',
+            isForMainFrame: true,
+          ),
+        );
+        await tester.pump();
+
+        expect(queueDoneCalls, 0,
+            reason: 'Phase 2 error must NOT fire onQueueDone');
+        expect(find.byKey(const Key('cf_wr_overlay')), findsOneWidget,
+            reason: 'Overlay must remain during Phase 2 error');
+      },
+    );
+
+    testWidgets(
+      '1.9  Phase 3 main-frame error → onQueueDone NOT fired again, '
+      'onNeedReQueue NOT called',
+      (tester) async {
+        int queueDoneCalls = 0;
+        bool needReQueueCalled = false;
+
+        final platform = await _pumpWidget(
+          tester,
+          config: WaitingRoomConfig(
+            isEnable: true,
+            queueUrl: 'https://test/',
+            queueKeyWord: ['waiting'],
+            passKeyWord: ['myapp'],
+            sessionTimeoutMinutes: 5,
+          ),
+          onQueueDone: () => queueDoneCalls++,
+          onNeedReQueue: () => needReQueueCalled = true,
+        );
+
+        // Phase 1 → Phase 2 (queue).
+        await platform.latestController!.simulatePageLoad('Waiting Room');
+        await tester.pumpAndSettle();
+
+        // Phase 2 → Phase 3 (passed).
+        await platform.latestController!.simulatePageLoad('myapp home');
+        await tester.pump();
+        expect(queueDoneCalls, 1);
+
+        // Fire a main-frame error while in Phase 3 (e.g. network error after
+        // cookie-clear reload).  This was the root bug — previously the error
+        // handler called _handleQueueDone() unconditionally, restarting the
+        // session timer as if the queue had been re-passed.
+        platform.latestDelegate!.onWebResourceErrorCallback?.call(
+          const WebResourceError(
+            errorCode: -2,
+            description: 'net::ERR_INTERNET_DISCONNECTED',
+            isForMainFrame: true,
+          ),
+        );
+        await tester.pump();
+
+        expect(queueDoneCalls, 1,
+            reason: 'Phase 3 error must NOT fire onQueueDone a second time');
+        expect(needReQueueCalled, isFalse,
+            reason: 'Phase 3 error must NOT fire onNeedReQueue');
       },
     );
   });
