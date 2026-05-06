@@ -268,10 +268,12 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
 
   @override
   State<CFWaitingRoomOverlayWidget> createState() =>
-      _CFWaitingRoomOverlayWidgetState();
+      CFWaitingRoomOverlayWidgetState();
 }
 
-class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
+// Make state class public so callers can hold a GlobalKey and invoke
+// checkQueueStatus() when autoReQueue=false.
+class CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     with WidgetsBindingObserver {
   late final WebViewController _controller;
 
@@ -498,8 +500,16 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     if (!mounted) return;
     if (widget.mockConfig?.isEnable == true) {
       _showMockSessionTimeoutDialog();
-    } else {
+    } else if (widget.config.autoReQueue != false) {
+      // Default (autoReQueue=true/null): revoke/clear + reload + auto phase-check.
       _revokeAndReload();
+      widget.onSessionTimeout?.call();
+    } else {
+      // autoReQueue=false: only revoke/clear the cookie, then signal the host.
+      // The host is responsible for calling checkQueueStatus() when ready.
+      debugPrint(
+          '[CF_WR] ⏱ autoReQueue=false — revoking/clearing only; host must call checkQueueStatus()');
+      _revokeOrClear();
       widget.onSessionTimeout?.call();
     }
   }
@@ -589,6 +599,70 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     }
   }
 
+  /// Revokes (Enterprise) or clears (non-Enterprise) the CF session cookie
+  /// **without** reloading the page.
+  ///
+  /// Used internally when [CFWaitingRoomOverlayWidget.autoReQueue] is `false`
+  /// so the host can perform its own async work before triggering a queue check
+  /// via [checkQueueStatus].
+  Future<void> _revokeOrClear() async {
+    if (!mounted) return;
+    final queueUrl = widget.config.queueUrl ?? '';
+    final acceptLanguage = _resolveLocale().toLanguageTag();
+    final isEnterprise = widget.config.isEnterprise == true;
+
+    if (isEnterprise) {
+      await _logCookies('BEFORE revoke (enterprise, no-reload)', queueUrl);
+      debugPrint('[CF_WR] 🔓 Enterprise revokeOrClear — sending revoke header');
+      _isRevoking = true;
+      CFWaitingRoomOverlayWidget._sendCfRevokeViaWebView(
+          _controller, widget.config, acceptLanguage);
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      _isRevoking = false;
+      await _logCookies('AFTER revoke (no reload)', queueUrl);
+    } else {
+      debugPrint(
+          '[CF_WR] 🧹 Non-enterprise revokeOrClear — clearing cookie jar + cache');
+      await _logCookies('BEFORE clear (non-enterprise, no-reload)', queueUrl);
+      await WebViewCookieManager().clearCookies();
+      await _controller.clearCache();
+      await _controller.clearLocalStorage();
+      await _logCookies('AFTER clear (no reload)', queueUrl);
+    }
+  }
+
+  /// Triggers a fresh reload of [WaitingRoomConfig.queueUrl] and runs the
+  /// normal queue-detection logic in `_onPageFinished`.
+  ///
+  /// Call this from outside (via `GlobalKey<CFWaitingRoomOverlayWidgetState>`)
+  /// when [CFWaitingRoomOverlayWidget.autoReQueue] is `false` and your app is
+  /// ready to let the widget re-check whether the CF queue is active.
+  ///
+  /// ```dart
+  /// final _wrKey = GlobalKey<CFWaitingRoomOverlayWidgetState>();
+  ///
+  /// // After your async work is done:
+  /// _wrKey.currentState?.checkQueueStatus();
+  /// ```
+  Future<void> checkQueueStatus() async {
+    if (!mounted) return;
+    debugPrint('[CF_WR] 🔍 checkQueueStatus() — reloading for queue detection');
+    final queueUrl = widget.config.queueUrl ?? '';
+    final acceptLanguage = _resolveLocale().toLanguageTag();
+    if (queueUrl.isNotEmpty) {
+      await _controller.loadRequest(
+        Uri.parse(queueUrl),
+        headers: {
+          'Accept-Language': acceptLanguage,
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+        },
+      );
+    } else {
+      await _controller.reload();
+    }
+  }
+
   /// Mock-only: asks the user whether to re-queue or stay in the app.
   void _showMockSessionTimeoutDialog() {
     showDialog<void>(
@@ -605,9 +679,6 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop();
-              // Cancel and clear the session so it never re-fires.
-              // Matches production: the timer fires once; the WebView
-              // reload handles re-detection, not a new timer.
               _sessionTimer?.cancel();
               _sessionStartTime = null;
               SharedPreferences.getInstance()

@@ -1,3 +1,17 @@
+## 0.4.1
+
+- feat: `WaitingRoomConfig.autoReQueue` flag — when `false`, session timeout only
+  revokes/clears the cookie without auto-reloading. Host calls
+  `key.currentState?.checkQueueStatus()` when ready to re-check queue status.
+  Defaults to `true` (existing behaviour unchanged).
+- feat: `CFWaitingRoomOverlayWidgetState` is now **public** — hold a
+  `GlobalKey<CFWaitingRoomOverlayWidgetState>` to call `checkQueueStatus()` externally.
+- fix: pressing "Force Re-Queue" no longer shows a black screen — the widget is
+  remounted from Phase 1 via a `ValueKey` that increments on every re-queue.
+- chore: example app refactored into a scenario menu with `isEnterprise` toggle
+  and three test scenarios (built-in dialog, custom page, instant re-queue).
+- chore: example app uses `flutter_dotenv` to keep the test URL out of git.
+
 ## 0.4.0
 
 - **breaking:** `sessionTimeoutSeconds` and `sessionTimeoutHours` removed from

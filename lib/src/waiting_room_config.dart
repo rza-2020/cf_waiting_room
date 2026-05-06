@@ -94,6 +94,20 @@ class WaitingRoomConfig {
   @JsonKey(name: 'isEnterprise')
   final bool? isEnterprise;
 
+  /// Controls whether the widget automatically transitions back to the queue
+  /// overlay (Phase 2) when a session timeout check detects the CF queue is
+  /// active again.
+  ///
+  /// | Value | Behaviour |
+  /// |-------|-----------|
+  /// | `true` (default) | On session timeout: revoke/clear cookie → reload → if queue detected, auto-transition to Phase 2 and call `onNeedReQueue`. |
+  /// | `false` | On session timeout: revoke/clear cookie only, then call `onSessionTimeout`. The host must call `key.currentState?.checkQueueStatus()` when ready to re-check. |
+  ///
+  /// Keeping this in `WaitingRoomConfig` allows toggling via Firebase Remote
+  /// Config without an app release.
+  @JsonKey(name: 'autoReQueue')
+  final bool? autoReQueue;
+
   /// Full message shown in the forceReQueue full-screen dialog.
   @JsonKey(name: 'reQueueDialogMessage')
   final String? reQueueDialogMessage;
@@ -143,6 +157,7 @@ class WaitingRoomConfig {
     this.sessionTimeoutMinutes,
     this.clearCookieOnStart,
     this.isEnterprise,
+    this.autoReQueue,
     this.reQueueDialogMessage,
     this.reQueueDialogBtnText,
     this.locale,
