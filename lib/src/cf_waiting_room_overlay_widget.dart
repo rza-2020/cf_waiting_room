@@ -3,10 +3,13 @@ import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'queue_waiting_info.dart';
 import 'waiting_room_config.dart';
+
+const _kSessionStartKey = 'cf_wr_session_start_ms';
 
 /// A full-screen Flutter widget that gates your app behind a
 /// [Cloudflare Waiting Room](https://developers.cloudflare.com/waiting-room/).
@@ -57,7 +60,6 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
     this.onSessionTimeout,
     this.onNeedReQueue,
     this.waitingOverlayBuilder,
-    this.reQueuePageBuilder,
     this.mockConfig,
     this.locale,
     this.overlayIcon,
@@ -103,16 +105,17 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
   final Widget Function(BuildContext context, QueueWaitingInfo info)?
       waitingOverlayBuilder;
 
-  /// Builder for the full-screen page shown by [forceReQueue].
-  ///
-  /// Receives an [onConfirm] callback — call it when the user confirms
-  /// re-queueing. The callback clears CF cookies then pops the page.
+  /// Supply a custom re-queue confirmation page via [forceReQueue]'s
+  /// `pageBuilder` parameter instead:
   ///
   /// ```dart
-  /// reQueuePageBuilder: (context, onConfirm) => MyReQueuePage(onConfirm: onConfirm),
+  /// await CFWaitingRoomOverlayWidget.forceReQueue(
+  ///   context,
+  ///   config: config,
+  ///   onConfirm: () => resetState(),
+  ///   pageBuilder: (ctx, onConfirm) => MyReQueuePage(onConfirm: onConfirm),
+  /// );
   /// ```
-  final Widget Function(BuildContext context, VoidCallback onConfirm)?
-      reQueuePageBuilder;
 
   /// Mock mode configuration. When non-null, the widget loads the bundled
   /// mock HTML instead of [WaitingRoomConfig.queueUrl], enabling full
@@ -176,7 +179,10 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
   /// confirm re-queueing.
   ///
   /// On confirm:
-  /// 1. All CF cookies are cleared via [WebViewCookieManager].
+  /// 1. `Cf-Waiting-Room-Command: revoke` is sent to CF via the WebView so
+  ///    the `__cfwaitingroom_<waitingroomname>` session cookie is included,
+  ///    freeing the slot.  (A background dart:io request would arrive
+  ///    cookie-less and be ignored.)
   /// 2. The page is popped.
   /// 3. [onConfirm] is called — reset your app's queue/auth state here.
   ///
@@ -206,12 +212,57 @@ class CFWaitingRoomOverlayWidget extends StatefulWidget {
         canPop: false,
         child: pageBuilder != null
             ? pageBuilder(ctx, () async {
-                await WebViewCookieManager().clearCookies();
+                // forceReQueue has no WebView reference — the widget's
+                // _revokeAndReload handles revoke+reload when onNeedReQueue
+                // transitions back to Phase 1.  Here we simply pop and call
+                // onConfirm; the host app is responsible for re-mounting the
+                // widget (which will trigger a fresh WebView load).
                 if (ctx.mounted) Navigator.of(ctx).pop();
                 onConfirm?.call();
               })
             : _DefaultReQueuePage(config: config, onConfirm: onConfirm),
       ),
+    );
+  }
+
+  /// Sends `Cf-Waiting-Room-Command: revoke` through the WebView so that the
+  /// request carries the `__cfwaitingroom_<waitingroomname>` session cookie
+  /// that CF needs to identify which slot to release.  The cookie name suffix
+  /// matches the waiting room name set in the Cloudflare dashboard and differs
+  /// per site.
+  ///
+  /// `dart:io` / `HttpClient` does **not** share the WebView cookie store, so
+  /// a background HTTP request would arrive at CF without the cookie and the
+  /// revoke would be silently ignored.  By routing through [controller] the
+  /// browser cookie jar is used automatically — equivalent to:
+  ///
+  /// ```sh
+  /// curl https://your-site.com/ \
+  ///   -H 'Cf-Waiting-Room-Command: revoke' \
+  ///   -b '__cfwaitingroom_<waitingroomname>=<token>'
+  /// ```
+  ///
+  /// The [onDone] callback is called once [controller.onPageFinished] fires
+  /// for the revoke response so the caller can chain a fresh reload.
+  ///
+  /// Ref: https://blog.cloudflare.com/banish-bots-from-your-waiting-room
+  static void _sendCfRevokeViaWebView(
+    WebViewController controller,
+    WaitingRoomConfig config,
+    String acceptLanguage,
+  ) {
+    final queueUrl = config.queueUrl;
+    if (queueUrl == null || queueUrl.isEmpty) return;
+    debugPrint(
+        '[CF_WR] 🔓 Sending Cf-Waiting-Room-Command: revoke via WebView (cookie attached)');
+    controller.loadRequest(
+      Uri.parse(queueUrl),
+      headers: {
+        'Cf-Waiting-Room-Command': 'revoke',
+        'Accept-Language': acceptLanguage,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+      },
     );
   }
 
@@ -235,6 +286,12 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
   Timer? _mockPassTimer;
   DateTime? _sessionStartTime;
 
+  /// True while a `Cf-Waiting-Room-Command: revoke` request is in-flight
+  /// through the WebView.  [_onPageFinished] must skip phase logic during
+  /// this window so the revoke response is not mistakenly interpreted as a
+  /// queue or pass page.
+  bool _isRevoking = false;
+
   QueueWaitingInfo _waitingInfo = const QueueWaitingInfo();
 
   @override
@@ -245,6 +302,7 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
       '[CF_WR] ▶ initState  url=${widget.config.queueUrl}  isMock=${widget.mockConfig?.isEnable == true}',
     );
     _initWebView();
+    _restorePersistedSession();
     _rotationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _hourglassTurns += 0.25);
     });
@@ -252,6 +310,7 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    debugPrint('[CF_WR] 📱 lifecycle → $state  (phase=$_phase)');
     if (state == AppLifecycleState.resumed &&
         (_phase == _WPhase.waiting || _phase == _WPhase.monitoring)) {
       debugPrint('[CF_WR] 🔄 App resumed → reloading WebView');
@@ -269,7 +328,6 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     _mockPassTimer?.cancel();
     super.dispose();
   }
-
   // ── Keyword detection ────────────────────────────────────────────────────
 
   /// Returns true if [title] matches any configured passKeyWord.
@@ -312,16 +370,34 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
       'please wait',
       'enable javascript',
     ];
-    if (cfMeta.any((s) => t.contains(s))) return true;
-    return widget.config.effectiveQueueKeyWords.any(
-      (kw) => t.contains(kw.toLowerCase()),
-    );
+    final matched = cfMeta.where((s) => t.contains(s)).toList();
+    if (matched.isNotEmpty) {
+      debugPrint('[CF_WR] _isAnyCFPage → true (matched CF meta: $matched)');
+      return true;
+    }
+    final kwMatch = widget.config.effectiveQueueKeyWords
+        .where((kw) => t.contains(kw.toLowerCase()))
+        .toList();
+    if (kwMatch.isNotEmpty) {
+      debugPrint(
+          '[CF_WR] _isAnyCFPage → true (matched queueKeyWord: $kwMatch)');
+      return true;
+    }
+    return false;
   }
 
   bool _isRealAppPage(String title) {
-    if (_isPassKeyWordMatch(title)) return true;
-    if (_isAnyCFPage(title)) return false;
-    return widget.config.effectivePassKeyWords.isEmpty;
+    if (_isPassKeyWordMatch(title)) {
+      debugPrint('[CF_WR] _isRealAppPage → true (passKeyWord match)');
+      return true;
+    }
+    if (_isAnyCFPage(title)) {
+      debugPrint('[CF_WR] _isRealAppPage → false (CF page)');
+      return false;
+    }
+    final result = widget.config.effectivePassKeyWords.isEmpty;
+    debugPrint('[CF_WR] _isRealAppPage → $result (passKeyWord empty=$result)');
+    return result;
   }
 
   // ── Internal queue-done handler ──────────────────────────────────────────
@@ -342,13 +418,62 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
 
   // ── Session timer ────────────────────────────────────────────────────────
 
+  /// Reads a previously persisted session start time from [SharedPreferences]
+  /// and restores [_sessionStartTime] so that [_rearmSessionTimer] fires
+  /// correctly even if the app was killed and restarted mid-session.
+  Future<void> _restorePersistedSession() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedMs = prefs.getInt(_kSessionStartKey);
+      if (savedMs != null && _sessionStartTime == null) {
+        final saved = DateTime.fromMillisecondsSinceEpoch(savedMs);
+        final timeout = widget.config.effectiveSessionTimeout;
+        if (timeout != null) {
+          final elapsed = DateTime.now().difference(saved);
+          if (elapsed < timeout) {
+            // Session is still valid — restore start time so re-arm works
+            _sessionStartTime = saved;
+            debugPrint(
+              '[CF_WR] ⏱ Restored session start from prefs '
+              '(${elapsed.inSeconds}s elapsed, '
+              '${(timeout - elapsed).inSeconds}s remaining)',
+            );
+          } else {
+            // Session already expired — clear stored key
+            debugPrint('[CF_WR] ⏱ Persisted session expired — clearing prefs');
+            await prefs.remove(_kSessionStartKey);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[CF_WR] ⚠ Could not restore persisted session: $e');
+    }
+  }
+
   void _startSessionTimer() {
     final timeout = widget.config.effectiveSessionTimeout;
     if (timeout == null || timeout <= Duration.zero) return;
     _sessionTimer?.cancel();
-    _sessionStartTime = DateTime.now();
-    debugPrint('[CF_WR] ⏱ Session timer started — ${timeout.inSeconds}s');
-    _sessionTimer = Timer(timeout, _onSessionTimerFired);
+
+    // If a persisted start time was restored (from a previous run), honour it
+    // so the timer fires at the correct wall-clock time after an app restart.
+    _sessionStartTime ??= DateTime.now();
+
+    // Persist the start time for cross-kill survival.
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setInt(
+        _kSessionStartKey,
+        _sessionStartTime!.millisecondsSinceEpoch,
+      );
+    }).catchError((_) {});
+
+    final elapsed = DateTime.now().difference(_sessionStartTime!);
+    final remaining = elapsed >= timeout ? Duration.zero : timeout - elapsed;
+    debugPrint(
+      '[CF_WR] ⏱ Session timer started — '
+      '${timeout.inSeconds}s total, ${remaining.inSeconds}s remaining',
+    );
+    _sessionTimer = Timer(remaining, _onSessionTimerFired);
   }
 
   void _rearmSessionTimer() {
@@ -374,10 +499,93 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     if (widget.mockConfig?.isEnable == true) {
       _showMockSessionTimeoutDialog();
     } else {
-      // Production: reload WebView — _onPageFinished will detect queue if needed
-      debugPrint('[CF_WR] ⏱ Reloading WebView to check queue status');
-      _controller.reload();
+      _revokeAndReload();
       widget.onSessionTimeout?.call();
+    }
+  }
+
+  /// Prints all JS-visible cookies from the WebView with a [label] prefix.
+  ///
+  /// ⚠️ `document.cookie` only returns **non-HttpOnly** cookies.
+  /// CF's waiting room session cookie follows the pattern
+  /// `__cfwaitingroom_<waitingroomname>` and is **HttpOnly** — it will NOT
+  /// appear here.  Use this log to check other visible cookies (e.g.
+  /// `cf_clearance`) and to confirm the cookie jar changes after a revoke.
+  Future<void> _logCookies(String label, String url) async {
+    if (url.isEmpty) return;
+    try {
+      final raw = await _controller.runJavaScriptReturningResult(
+        'document.cookie',
+      );
+      final cookies = (raw as String).replaceAll(RegExp(r'^"|"$'), '').trim();
+      if (cookies.isEmpty) {
+        debugPrint('[CF_WR] 🍪 $label — no JS-visible cookies');
+      } else {
+        debugPrint('[CF_WR] 🍪 $label — $cookies');
+      }
+    } catch (e) {
+      debugPrint('[CF_WR] ⚠ _logCookies($label) failed: $e');
+    }
+  }
+
+  /// Two-step CF session revocation for **Enterprise** plans, or local cookie
+  /// clear for lower-tier plans.
+  ///
+  /// **Enterprise** (`isEnterprise == true`):
+  ///   Step 1 — Send `Cf-Waiting-Room-Command: revoke` through the WebView so
+  ///   the `__cfwaitingroom_<waitingroomname>` cookie is carried automatically,
+  ///   freeing the CF slot server-side.
+  ///   Step 2 — Fresh reload so CF issues a new evaluation response.
+  ///
+  /// **Non-Enterprise** (`isEnterprise != true`):
+  ///   CF ignores the revoke header on lower-tier plans.  Instead, clear the
+  ///   WebView cookie jar + cache + localStorage locally so the next request
+  ///   arrives without a session cookie and CF re-evaluates.
+  ///
+  /// Ref: https://blog.cloudflare.com/banish-bots-from-your-waiting-room
+  Future<void> _revokeAndReload() async {
+    if (!mounted) return;
+    final queueUrl = widget.config.queueUrl ?? '';
+    final acceptLanguage = _resolveLocale().toLanguageTag();
+    final isEnterprise = widget.config.isEnterprise == true;
+
+    if (isEnterprise) {
+      // ── Enterprise: server-side revoke via header ──────────────────────
+      await _logCookies('BEFORE revoke (enterprise)', queueUrl);
+      debugPrint(
+          '[CF_WR] ⏱ Enterprise — Step 1: Cf-Waiting-Room-Command: revoke');
+      _isRevoking = true;
+      CFWaitingRoomOverlayWidget._sendCfRevokeViaWebView(
+          _controller, widget.config, acceptLanguage);
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      _isRevoking = false;
+      await _logCookies('AFTER revoke (before reload)', queueUrl);
+      debugPrint(
+          '[CF_WR] ⏱ Enterprise — Step 2: fresh reload for new CF evaluation');
+    } else {
+      // ── Non-Enterprise: clear local cookie jar + cache ─────────────────
+      debugPrint(
+          '[CF_WR] 🧹 Non-enterprise: clearing cookie jar + cache (revoke header not supported)');
+      await _logCookies('BEFORE clear (non-enterprise)', queueUrl);
+      await WebViewCookieManager().clearCookies();
+      await _controller.clearCache();
+      await _controller.clearLocalStorage();
+      await _logCookies('AFTER clear (non-enterprise)', queueUrl);
+      debugPrint('[CF_WR] ⏱ Non-enterprise: reloading for fresh CF evaluation');
+    }
+
+    if (!mounted) return;
+    if (queueUrl.isNotEmpty) {
+      _controller.loadRequest(
+        Uri.parse(queueUrl),
+        headers: {
+          'Accept-Language': acceptLanguage,
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+        },
+      );
+    } else {
+      _controller.reload();
     }
   }
 
@@ -387,19 +595,27 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        title: const Text('Session Check (Mock)'),
+        title: const Text('[Mock] Session timeout'),
         content: Text(
-          'Session timeout reached (${widget.config.effectiveSessionTimeout?.inSeconds}s).\n\nDo you need to queue again?',
+          'Session timeout reached (${widget.config.effectiveSessionTimeout?.inSeconds}s).\n\n'
+          'Simulate: is the waiting room still active?\n'
+          '(This dialog only appears in mock mode.)',
         ),
         actions: [
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop();
-              // Restart session timer for the next cycle
-              _startSessionTimer();
+              // Cancel and clear the session so it never re-fires.
+              // Matches production: the timer fires once; the WebView
+              // reload handles re-detection, not a new timer.
+              _sessionTimer?.cancel();
+              _sessionStartTime = null;
+              SharedPreferences.getInstance()
+                  .then((p) => p.remove(_kSessionStartKey))
+                  .catchError((_) => false);
               widget.onSessionTimeout?.call();
             },
-            child: const Text('No — stay in app'),
+            child: const Text('No — queue cleared'),
           ),
           ElevatedButton(
             onPressed: () {
@@ -407,7 +623,7 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
               widget.onNeedReQueue?.call();
               _resetMock();
             },
-            child: const Text('Yes — re-queue'),
+            child: const Text('Yes — still in queue'),
           ),
         ],
       ),
@@ -422,6 +638,10 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     _sessionTimer?.cancel();
     _sessionStartTime = null;
     _mockPassTimer?.cancel();
+    // Clear persisted session so it doesn't affect the fresh run.
+    SharedPreferences.getInstance()
+        .then((p) => p.remove(_kSessionStartKey))
+        .catchError((_) => false);
     if (!mounted) return;
     setState(() {
       _phase = _WPhase.loading;
@@ -437,8 +657,12 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
       final html = await rootBundle.loadString(
         'packages/cf_waiting_room/assets/mock_waiting_room.html',
       );
+      debugPrint(
+          '[CF_WR] 🎭 Mock HTML loaded from asset bundle (${html.length} chars)');
       await _controller.loadHtmlString(html, baseUrl: queueUrl);
-    } catch (_) {
+    } catch (e) {
+      debugPrint(
+          '[CF_WR] 🎭 Mock asset load failed ($e) — falling back to loadRequest: $queueUrl');
       if (queueUrl.isNotEmpty) {
         _controller.loadRequest(
           Uri.parse(queueUrl),
@@ -507,10 +731,26 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
       );
 
     if (widget.config.clearCookieOnStart != false) {
-      debugPrint('[CF_WR] 🧹 Clearing cookies, cache and local storage');
-      await WebViewCookieManager().clearCookies();
-      await _controller.clearCache();
-      await _controller.clearLocalStorage();
+      final acceptLanguage = _resolveLocale().toLanguageTag();
+      if (widget.config.isEnterprise == true) {
+        // Enterprise: revoke server-side slot then clear local cache.
+        debugPrint(
+            '[CF_WR] 🧹 Enterprise clearCookieOnStart: sending revoke + clearing cache/storage');
+        _isRevoking = true;
+        CFWaitingRoomOverlayWidget._sendCfRevokeViaWebView(
+            _controller, widget.config, acceptLanguage);
+        await Future<void>.delayed(const Duration(milliseconds: 800));
+        _isRevoking = false;
+        await _controller.clearCache();
+        await _controller.clearLocalStorage();
+      } else {
+        // Non-enterprise: clear cookie jar + cache locally.
+        debugPrint(
+            '[CF_WR] 🧹 Non-enterprise clearCookieOnStart: clearing cookie jar + cache/storage');
+        await WebViewCookieManager().clearCookies();
+        await _controller.clearCache();
+        await _controller.clearLocalStorage();
+      }
     } else {
       debugPrint('[CF_WR] 🔑 clearCookieOnStart=false — skipping clear');
     }
@@ -529,6 +769,12 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
   }
 
   Future<void> _onPageFinished(String pageUrl) async {
+    // Skip processing during the revoke request — the revoke response must
+    // not be treated as a queue or pass page.
+    if (_isRevoking) {
+      debugPrint('[CF_WR] ⏭ _onPageFinished skipped (revoke in-flight)');
+      return;
+    }
     final title = await _controller.getTitle() ?? '';
     final isWaiting = _isWaitingRoomPage(pageUrl, title);
     debugPrint(
@@ -538,43 +784,66 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
 
     switch (_phase) {
       case _WPhase.loading:
-        // Phase 1: full-screen WebView
         if (!isWaiting) {
-          if (title.isEmpty || _isAnyCFPage(title)) return;
+          if (title.isEmpty) {
+            debugPrint('[CF_WR] ⏭ Phase 1: empty title — staying in Phase 1');
+            return;
+          }
+          if (_isAnyCFPage(title)) {
+            debugPrint(
+                '[CF_WR] ⏭ Phase 1: CF/bot-check page — staying in Phase 1');
+            return;
+          }
           debugPrint('[CF_WR] ✅ Not a queue page (Phase 1) → done');
           _handleQueueDone();
           return;
         }
-        // Queue detected → transition to Phase 2
         _transitionToWaiting(title);
 
       case _WPhase.waiting:
-        // Phase 2: native overlay shown
         if (!isWaiting) {
           if (title.isNotEmpty && _isRealAppPage(title)) {
             debugPrint('[CF_WR] ✅ Queue passed (Phase 2) → done');
             _handleQueueDone();
+          } else {
+            debugPrint(
+              '[CF_WR] ⏭ Phase 2: page not recognised as real app page '
+              '(title="$title") — staying in overlay',
+            );
           }
           return;
         }
-        // Still waiting — update info
+        debugPrint(
+            '[CF_WR] 🔄 Phase 2: still in queue — refreshing overlay info');
         _transitionToWaiting(title);
 
       case _WPhase.monitoring:
-        // Phase 3: invisible monitoring after queue passed
+        // Log cookies on every Phase 3 page-finish so we can see what CF
+        // returned after the revoke + fresh reload cycle.
+        _logCookies('Phase 3 onPageFinished', pageUrl);
         if (isWaiting) {
           // Queue came back! Return to Phase 2 and notify host
           debugPrint('[CF_WR] ⚠ Queue detected in monitoring → re-queue');
           _sessionTimer?.cancel();
           _sessionStartTime = null;
+          // Clear persisted session — user must re-queue from scratch.
+          SharedPreferences.getInstance()
+              .then((p) => p.remove(_kSessionStartKey))
+              .catchError((_) => false);
           _transitionToWaiting(title);
           widget.onNeedReQueue?.call();
+        } else {
+          debugPrint(
+              '[CF_WR] ✓ Phase 3: reload confirmed no queue — restarting session timer');
+          // Reset start time so the next cycle runs for the full duration,
+          // then re-arm.  This keeps the periodic queue-check running
+          // indefinitely until a queue is detected or the widget is disposed.
+          _sessionStartTime = null;
+          _startSessionTimer();
         }
-      // Not waiting → still clear, do nothing
     }
   }
 
-  /// Extracts CF content and transitions to Phase 2 (native overlay).
   Future<void> _transitionToWaiting(String pageTitle) async {
     final etaId = widget.config.effectiveEtaId;
     final lastUpdatedId = widget.config.effectiveLastUpdatedId;
@@ -589,21 +858,31 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
           .replaceAll(r'\n', '\n')
           .trim();
       if (title_.isEmpty) title_ = null;
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[CF_WR] ⚠ JS h1 extraction failed: $e');
+    }
     try {
       final raw = await _controller.runJavaScriptReturningResult(
         "document.getElementById('$etaId')?.innerText?.trim()??''",
       );
       eta_ = (raw as String).replaceAll(RegExp(r'^"|"$'), '').trim();
       if (eta_.isEmpty) eta_ = null;
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[CF_WR] ⚠ JS eta (#$etaId) extraction failed: $e');
+    }
     try {
       final raw = await _controller.runJavaScriptReturningResult(
         "document.getElementById('$lastUpdatedId')?.innerText?.trim()??''",
       );
       lastUpdated_ = (raw as String).replaceAll(RegExp(r'^"|"$'), '').trim();
       if (lastUpdated_.isEmpty) lastUpdated_ = null;
-    } catch (_) {}
+    } catch (e) {
+      debugPrint(
+          '[CF_WR] ⚠ JS lastUpdated (#$lastUpdatedId) extraction failed: $e');
+    }
+    debugPrint(
+      '[CF_WR] 🖼 Phase 2 info — h1="$title_"  eta="$eta_"  lastUpdated="$lastUpdated_"',
+    );
     if (mounted) {
       setState(() {
         _phase = _WPhase.waiting;
@@ -656,6 +935,7 @@ class _CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
           );
 
     return Positioned.fill(
+      key: const Key('cf_wr_overlay'),
       child: Stack(
         children: [
           Positioned(
@@ -814,7 +1094,9 @@ class _DefaultReQueuePageState extends State<_DefaultReQueuePage> {
   Future<void> _confirm() async {
     if (_processing) return;
     setState(() => _processing = true);
-    await WebViewCookieManager().clearCookies();
+    // The revoke+reload cycle is handled by the widget's _revokeAndReload
+    // when the host resets state and re-mounts CFWaitingRoomOverlayWidget.
+    // Nothing to do here other than dismiss the page and call onConfirm.
     if (mounted) Navigator.of(context).pop();
     widget.onConfirm?.call();
   }

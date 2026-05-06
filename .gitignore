@@ -43,3 +43,6 @@ coverage/
 # Symbolication / obfuscation
 app.*.symbols
 app.*.map.json
+
+# FVM Version Cache
+.fvm/

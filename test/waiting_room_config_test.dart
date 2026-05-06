@@ -52,6 +52,7 @@ void main() {
         isEnable: true,
         queueUrl: 'https://example.com/',
         locale: 'en-US',
+        sessionTimeoutMinutes: 10,
         waitingTitle: 'Queuing…',
         waitingRefreshMessage: 'Auto-refreshing.',
         lastUpdatedPrefix: 'At: ',
@@ -60,9 +61,52 @@ void main() {
       expect(json['isEnable'], isTrue);
       expect(json['queueUrl'], 'https://example.com/');
       expect(json['locale'], 'en-US');
+      expect(json['sessionTimeoutMinutes'], 10);
       expect(json['waitingTitle'], 'Queuing…');
       expect(json['waitingRefreshMessage'], 'Auto-refreshing.');
       expect(json['lastUpdatedPrefix'], 'At: ');
+    });
+
+    // ── effectiveSessionTimeout ──────────────────────────────────────────
+
+    group('effectiveSessionTimeout', () {
+      test('returns null when sessionTimeoutMinutes is not set', () {
+        expect(WaitingRoomConfig().effectiveSessionTimeout, isNull);
+      });
+
+      test('returns null when sessionTimeoutMinutes is 0', () {
+        expect(
+          WaitingRoomConfig(sessionTimeoutMinutes: 0).effectiveSessionTimeout,
+          isNull,
+        );
+      });
+
+      test('non-enterprise: adds 60s grace to configured minutes', () {
+        final config = WaitingRoomConfig(
+          sessionTimeoutMinutes: 5,
+          isEnterprise: false,
+        );
+        expect(
+          config.effectiveSessionTimeout,
+          const Duration(minutes: 5, seconds: 60),
+        );
+      });
+
+      test('non-enterprise (isEnterprise unset): adds 60s grace', () {
+        final config = WaitingRoomConfig(sessionTimeoutMinutes: 10);
+        expect(
+          config.effectiveSessionTimeout,
+          const Duration(minutes: 10, seconds: 60),
+        );
+      });
+
+      test('enterprise: no grace period added', () {
+        final config = WaitingRoomConfig(
+          sessionTimeoutMinutes: 5,
+          isEnterprise: true,
+        );
+        expect(config.effectiveSessionTimeout, const Duration(minutes: 5));
+      });
     });
 
     // ── effective getters — null defaults ────────────────────────────────
@@ -100,6 +144,10 @@ void main() {
         expect(empty.lastUpdatedPrefix, isNull);
         expect(empty.locale, isNull);
       });
+
+      test('effectiveSessionTimeout is null by default', () {
+        expect(empty.effectiveSessionTimeout, isNull);
+      });
     });
 
     // ── effective getters — provided values ──────────────────────────────
@@ -129,6 +177,68 @@ void main() {
 
     test('isEnabled is true when isEnable is true', () {
       expect(WaitingRoomConfig(isEnable: true).isEnabled, isTrue);
+    });
+  });
+
+  // ── MockConfig ──────────────────────────────────────────────────────────
+
+  group('MockConfig', () {
+    test('default values', () {
+      const mc = MockConfig();
+      expect(mc.isEnable, isFalse);
+      expect(mc.waitDuration, const Duration(seconds: 30));
+    });
+
+    test('custom values', () {
+      const mc = MockConfig(
+        isEnable: true,
+        waitDuration: Duration(seconds: 10),
+      );
+      expect(mc.isEnable, isTrue);
+      expect(mc.waitDuration, const Duration(seconds: 10));
+    });
+
+    test('fromJson roundtrip', () {
+      final json = {'isEnable': true, 'waitSeconds': 20};
+      final mc = MockConfig.fromJson(json);
+      expect(mc.isEnable, isTrue);
+      expect(mc.waitDuration, const Duration(seconds: 20));
+    });
+
+    test('toJson roundtrip', () {
+      const mc =
+          MockConfig(isEnable: true, waitDuration: Duration(seconds: 15));
+      final json = mc.toJson();
+      expect(json['isEnable'], isTrue);
+      expect(json['waitSeconds'], 15);
+    });
+
+    test('fromJson defaults when fields missing', () {
+      final mc = MockConfig.fromJson({});
+      expect(mc.isEnable, isFalse);
+      expect(mc.waitDuration, const Duration(seconds: 30));
+    });
+  });
+
+  // ── QueueWaitingInfo ────────────────────────────────────────────────────
+
+  group('QueueWaitingInfo', () {
+    test('const constructor — all null by default', () {
+      const info = QueueWaitingInfo();
+      expect(info.title, isNull);
+      expect(info.eta, isNull);
+      expect(info.lastUpdated, isNull);
+    });
+
+    test('holds provided values', () {
+      const info = QueueWaitingInfo(
+        title: 'You are in the queue',
+        eta: '5 minutes',
+        lastUpdated: '12:00',
+      );
+      expect(info.title, 'You are in the queue');
+      expect(info.eta, '5 minutes');
+      expect(info.lastUpdated, '12:00');
     });
   });
 }

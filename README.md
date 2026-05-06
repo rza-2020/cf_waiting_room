@@ -45,7 +45,7 @@ User opens app
 
 ```yaml
 dependencies:
-  cf_waiting_room: ^0.3.0
+  cf_waiting_room: ^0.4.0
 ```
 
 ---
@@ -61,7 +61,8 @@ class _GatePageState extends State<_GatePage> {
     queueUrl: 'https://your-site.com/',
     queueKeyWord: ['waiting', 'queue'],
     passKeyWord: ['myapp'],           // substring of the real app page title
-    sessionTimeoutSeconds: 1500,     // 25 min post-pass monitoring interval
+    sessionTimeoutMinutes: 25,        // post-pass monitoring interval
+    isEnterprise: false,              // true if your CF zone is Enterprise
   );
 
   @override
@@ -83,17 +84,49 @@ class _GatePageState extends State<_GatePage> {
 
 ---
 
-## Session timeout
+## Session timeout & CF plan tier
 
-`sessionTimeoutSeconds` / `sessionTimeoutMinutes` / `sessionTimeoutHours`
-starts counting **after the queue is passed** (Phase 3). When it fires the
-WebView reloads silently to re-check whether the CF queue is back.
+`sessionTimeoutMinutes` starts counting **after the queue is passed** (Phase 3).
+When it fires the widget revokes the CF session and reloads silently to re-check
+whether the CF queue is active again.
 
 ```dart
 WaitingRoomConfig(
-  sessionTimeoutSeconds: 1500,  // 25 minutes
-  // or: sessionTimeoutMinutes: 25,
-  // or: sessionTimeoutHours: 1,
+  sessionTimeoutMinutes: 25,   // set to your CF waiting room session duration
+  isEnterprise: false,         // default — use true for Enterprise zones
+)
+```
+
+### `isEnterprise` flag
+
+Cloudflare's session revocation via the `Cf-Waiting-Room-Command: revoke` HTTP
+header is an **Enterprise-only feature**.
+
+| Plan | Session reset method |
+|------|---------------------|
+| Free / Pro / Business | Cookie jar + cache cleared locally in the WebView |
+| **Enterprise** | `Cf-Waiting-Room-Command: revoke` header — CF frees the slot server-side immediately |
+
+**Non-enterprise grace period:** CF automatically renews the
+`__cfwaitingroom_*` cookie expiry on every WebView request.  The widget
+automatically adds **60 seconds** to `sessionTimeoutMinutes` when
+`isEnterprise` is `false`, so the timer fires after the cookie has genuinely
+expired.  Set `sessionTimeoutMinutes` equal to your CF session duration — the
+widget handles the extra 60 s internally.
+
+```dart
+// CF waiting room session = 20 min, non-enterprise
+// Widget fires after 21 min (20 min + 60 s grace)
+WaitingRoomConfig(
+  sessionTimeoutMinutes: 20,
+  isEnterprise: false,  // default
+)
+
+// CF waiting room session = 20 min, enterprise
+// Widget fires after exactly 20 min + revoke header sent
+WaitingRoomConfig(
+  sessionTimeoutMinutes: 20,
+  isEnterprise: true,
 )
 ```
 
@@ -114,7 +147,7 @@ CFWaitingRoomOverlayWidget(
 )
 ```
 
-**Mock timeline** (with `sessionTimeoutSeconds: 15`, `waitDuration: 10s`):
+**Mock timeline** (with `sessionTimeoutMinutes: 1`, `waitDuration: 10s`):
 
 | t | Event |
 |---|---|
@@ -219,7 +252,8 @@ CFWaitingRoomOverlayWidget(
   "passKeyWord": ["myapp"],
   "etaId": "waitTime",
   "lastUpdatedId": "last-updated",
-  "sessionTimeoutSeconds": 1500,
+  "sessionTimeoutMinutes": 25,
+  "isEnterprise": false,
   "clearCookieOnStart": true,
   "locale": "zh-HK",
   "waitingTitle": "您正在排隊中，感謝耐心等候。",

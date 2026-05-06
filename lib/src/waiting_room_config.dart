@@ -59,25 +59,40 @@ class WaitingRoomConfig {
   @JsonKey(name: 'lastUpdatedId')
   final String? lastUpdatedId;
 
-  /// Minutes after queue is confirmed before [onSessionTimeout] fires.
-  /// Prefer [sessionTimeoutSeconds] or [sessionTimeoutHours] for finer control.
+  /// Minutes after queue is confirmed before the session timeout fires and
+  /// the widget re-checks whether the CF queue is active again.
+  ///
+  /// **Non-enterprise:** set this to your CF waiting-room session duration —
+  /// the widget automatically adds a 60-second grace period so the CF cookie
+  /// has truly expired before the widget clears it and re-evaluates.
+  ///
+  /// **Enterprise:** set this equal to (or slightly less than) your CF
+  /// waiting-room session duration — the revoke header frees the slot
+  /// immediately.
   @JsonKey(name: 'sessionTimeoutMinutes')
   final int? sessionTimeoutMinutes;
-
-  /// Seconds after queue is confirmed before [onSessionTimeout] fires.
-  /// Takes priority over [sessionTimeoutMinutes] and [sessionTimeoutHours].
-  @JsonKey(name: 'sessionTimeoutSeconds')
-  final int? sessionTimeoutSeconds;
-
-  /// Hours after queue is confirmed before [onSessionTimeout] fires.
-  /// Lowest priority — used only when neither seconds nor minutes are set.
-  @JsonKey(name: 'sessionTimeoutHours')
-  final int? sessionTimeoutHours;
 
   /// 訪特權 Off → false: skip clearing cookies/cache on widget init.
   /// Defaults to true (always clear).
   @JsonKey(name: 'clearCookieOnStart')
   final bool? clearCookieOnStart;
+
+  /// Set to `true` when your Cloudflare zone is on the **Enterprise** plan.
+  ///
+  /// | Plan              | Session revocation method |
+  /// |-------------------|--------------------------|
+  /// | Free / Pro / Business | Cookie jar + cache cleared locally (CF re-evaluates on next request) |
+  /// | **Enterprise**    | `Cf-Waiting-Room-Command: revoke` header — CF frees the slot server-side immediately |
+  ///
+  /// **Non-enterprise note:** CF automatically renews the `__cfwaitingroom_*`
+  /// cookie expiry on every request the WebView makes.  To guarantee that the
+  /// cookie has *actually* expired by the time the Flutter session timer fires,
+  /// set [sessionTimeoutMinutes] (or seconds/hours) to **CF's configured
+  /// waiting-room session duration + at least 1 minute**.  The widget adds a
+  /// 60-second automatic grace period on top of your configured value when
+  /// [isEnterprise] is `false`.
+  @JsonKey(name: 'isEnterprise')
+  final bool? isEnterprise;
 
   /// Full message shown in the forceReQueue full-screen dialog.
   @JsonKey(name: 'reQueueDialogMessage')
@@ -126,9 +141,8 @@ class WaitingRoomConfig {
     this.etaId,
     this.lastUpdatedId,
     this.sessionTimeoutMinutes,
-    this.sessionTimeoutSeconds,
-    this.sessionTimeoutHours,
     this.clearCookieOnStart,
+    this.isEnterprise,
     this.reQueueDialogMessage,
     this.reQueueDialogBtnText,
     this.locale,
@@ -146,18 +160,20 @@ class WaitingRoomConfig {
 
   /// Effective session timeout as a [Duration].
   ///
-  /// Resolution order: [sessionTimeoutSeconds] → [sessionTimeoutMinutes] → [sessionTimeoutHours].
+  /// Returns `null` if [sessionTimeoutMinutes] is not set or is zero.
+  ///
+  /// When [isEnterprise] is `false` (or unset) an automatic **60-second grace
+  /// period** is added.  This compensates for CF automatically renewing the
+  /// `__cfwaitingroom_*` cookie expiry on every WebView request, ensuring the
+  /// cookie has genuinely expired before the widget clears it and re-evaluates.
   Duration? get effectiveSessionTimeout {
-    if (sessionTimeoutSeconds != null && sessionTimeoutSeconds! > 0) {
-      return Duration(seconds: sessionTimeoutSeconds!);
-    }
-    if (sessionTimeoutMinutes != null && sessionTimeoutMinutes! > 0) {
-      return Duration(minutes: sessionTimeoutMinutes!);
-    }
-    if (sessionTimeoutHours != null && sessionTimeoutHours! > 0) {
-      return Duration(hours: sessionTimeoutHours!);
-    }
-    return null;
+    if (sessionTimeoutMinutes == null || sessionTimeoutMinutes! <= 0)
+      return null;
+    Duration base = Duration(minutes: sessionTimeoutMinutes!);
+    // Non-enterprise: CF auto-renews the cookie on each request, so add a
+    // 60-second grace to guarantee it has truly expired when the timer fires.
+    if (isEnterprise != true) base += const Duration(seconds: 60);
+    return base;
   }
 
   List<String> get effectiveQueueKeyWords => (queueKeyWord?.isNotEmpty == true)
