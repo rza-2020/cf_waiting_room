@@ -599,12 +599,21 @@ class CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
     }
   }
 
-  /// Revokes (Enterprise) or clears (non-Enterprise) the CF session cookie
-  /// **without** reloading the page.
+  /// Revokes (Enterprise) or marks a pending clear (non-Enterprise) **without**
+  /// reloading the page.
   ///
-  /// Used internally when [CFWaitingRoomOverlayWidget.autoReQueue] is `false`
-  /// so the host can perform its own async work before triggering a queue check
-  /// via [checkQueueStatus].
+  /// Used internally when [WaitingRoomConfig.autoReQueue] is `false` so the
+  /// host can perform its own async work before triggering a queue check via
+  /// [checkQueueStatus].
+  ///
+  /// **Enterprise**: sends `Cf-Waiting-Room-Command: revoke` now (slot freed
+  /// immediately server-side).
+  ///
+  /// **Non-Enterprise**: does **not** clear the cookie jar here — doing so
+  /// would wipe all WebView cookies (not just the CF waiting room cookie),
+  /// which could invalidate unrelated sessions.  The cookie jar is cleared
+  /// lazily inside [checkQueueStatus] directly before the reload so the clear
+  /// and the fresh request happen atomically.
   Future<void> _revokeOrClear() async {
     if (!mounted) return;
     final queueUrl = widget.config.queueUrl ?? '';
@@ -621,22 +630,24 @@ class CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
       _isRevoking = false;
       await _logCookies('AFTER revoke (no reload)', queueUrl);
     } else {
+      // Non-enterprise: skip clearing here to avoid wiping unrelated cookies.
+      // checkQueueStatus() will clear just before reloading.
       debugPrint(
-          '[CF_WR] 🧹 Non-enterprise revokeOrClear — clearing cookie jar + cache');
-      await _logCookies('BEFORE clear (non-enterprise, no-reload)', queueUrl);
-      await WebViewCookieManager().clearCookies();
-      await _controller.clearCache();
-      await _controller.clearLocalStorage();
-      await _logCookies('AFTER clear (no reload)', queueUrl);
+          '[CF_WR] ℹ Non-enterprise revokeOrClear — deferring cookie clear to checkQueueStatus()');
     }
   }
 
   /// Triggers a fresh reload of [WaitingRoomConfig.queueUrl] and runs the
   /// normal queue-detection logic in `_onPageFinished`.
   ///
+  /// For **non-enterprise** plans the cookie jar, cache and localStorage are
+  /// cleared immediately before reloading so CF re-evaluates the session from
+  /// scratch.  This is the deferred clear that [_revokeOrClear] intentionally
+  /// skips to avoid nuking unrelated WebView cookies prematurely.
+  ///
   /// Call this from outside (via `GlobalKey<CFWaitingRoomOverlayWidgetState>`)
-  /// when [CFWaitingRoomOverlayWidget.autoReQueue] is `false` and your app is
-  /// ready to let the widget re-check whether the CF queue is active.
+  /// when [WaitingRoomConfig.autoReQueue] is `false` and your app is ready to
+  /// let the widget re-check whether the CF queue is active.
   ///
   /// ```dart
   /// final _wrKey = GlobalKey<CFWaitingRoomOverlayWidgetState>();
@@ -644,11 +655,35 @@ class CFWaitingRoomOverlayWidgetState extends State<CFWaitingRoomOverlayWidget>
   /// // After your async work is done:
   /// _wrKey.currentState?.checkQueueStatus();
   /// ```
+  ///
+  /// ## Live config updates
+  ///
+  /// All [WaitingRoomConfig] fields — including [WaitingRoomConfig.autoReQueue]
+  /// — are read from `widget.config` at the moment they are needed.  Flutter
+  /// automatically updates `widget` when the parent rebuilds with a new config
+  /// object, so changes pushed from Firebase Remote Config (or any other source)
+  /// take effect on the **very next** operation without remounting the widget.
   Future<void> checkQueueStatus() async {
     if (!mounted) return;
     debugPrint('[CF_WR] 🔍 checkQueueStatus() — reloading for queue detection');
     final queueUrl = widget.config.queueUrl ?? '';
     final acceptLanguage = _resolveLocale().toLanguageTag();
+
+    // Non-enterprise: clear the cookie jar + cache right before the reload so
+    // CF sees a fresh session.  We defer this until here (rather than in
+    // _revokeOrClear) to avoid clearing unrelated cookies before the host app
+    // has finished its own async work.
+    if (widget.config.isEnterprise != true && queueUrl.isNotEmpty) {
+      debugPrint(
+          '[CF_WR] 🧹 checkQueueStatus: non-enterprise — clearing cookie jar + cache before reload');
+      await _logCookies('BEFORE clear (checkQueueStatus)', queueUrl);
+      await WebViewCookieManager().clearCookies();
+      await _controller.clearCache();
+      await _controller.clearLocalStorage();
+      await _logCookies('AFTER clear (checkQueueStatus)', queueUrl);
+    }
+
+    if (!mounted) return;
     if (queueUrl.isNotEmpty) {
       await _controller.loadRequest(
         Uri.parse(queueUrl),

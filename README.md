@@ -52,34 +52,50 @@ dependencies:
 
 ## Quick start
 
+Use **`CFWaitingRoomGate`** — the drop-in root widget that manages the Stack,
+remount key, and queue-done state for you:
+
 ```dart
-class _GatePageState extends State<_GatePage> {
-  bool _queueDone = false;
+final _config = WaitingRoomConfig(
+  isEnable: true,
+  queueUrl: 'https://your-site.com/',
+  queueKeyWord: ['waiting', 'queue'],
+  passKeyWord: ['myapp'],        // substring of the real app page title
+  sessionTimeoutMinutes: 25,     // post-pass monitoring interval
+  isEnterprise: false,           // true if your CF zone is Enterprise
+);
 
-  final _config = WaitingRoomConfig(
-    isEnable: true,
-    queueUrl: 'https://your-site.com/',
-    queueKeyWord: ['waiting', 'queue'],
-    passKeyWord: ['myapp'],           // substring of the real app page title
-    sessionTimeoutMinutes: 25,        // post-pass monitoring interval
-    isEnterprise: false,              // true if your CF zone is Enterprise
+@override
+Widget build(BuildContext context) {
+  return CFWaitingRoomGate(
+    config: _config,
+    // appBuilder receives onReQueue — pass it to forceReQueue.onConfirm
+    appBuilder: (context, onReQueue) => YourAppContent(
+      onPurchaseComplete: () => CFWaitingRoomOverlayWidget.forceReQueue(
+        context,
+        config: _config,
+        onConfirm: onReQueue,   // ← gate resets to Phase 1 automatically
+      ),
+    ),
+    onSessionTimeout: () => _showSessionExpiredBanner(),
   );
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        if (_queueDone) YourAppContent(),
-        CFWaitingRoomOverlayWidget(
-          config: _config,
-          onQueueDone: () => setState(() => _queueDone = true),
-          onNeedReQueue: () => setState(() => _queueDone = false),
-          onSessionTimeout: () => _showSessionExpiredBanner(),
-        ),
-      ],
-    );
-  }
 }
+```
+
+Need full control over the Stack layout? Use **`CFWaitingRoomOverlayWidget`**
+directly (must be a child of a [Stack], uses [Positioned] internally):
+
+```dart
+Stack(
+  children: [
+    if (_queueDone) YourAppContent(),
+    CFWaitingRoomOverlayWidget(
+      config: _config,
+      onQueueDone: () => setState(() => _queueDone = true),
+      onNeedReQueue: () => setState(() { _queueDone = false; generation++; }),
+    ),
+  ],
+)
 ```
 
 ---
@@ -135,14 +151,13 @@ WaitingRoomConfig(
 ## Mock mode — test the full flow without a live CF endpoint
 
 ```dart
-CFWaitingRoomOverlayWidget(
+CFWaitingRoomGate(
   config: _config,
   mockConfig: MockConfig(
     isEnable: true,
     waitDuration: Duration(seconds: 10), // auto-pass after 10 s
   ),
-  onQueueDone: () => setState(() => _queueDone = true),
-  onNeedReQueue: () => setState(() => _queueDone = false),
+  appBuilder: (context, onReQueue) => YourAppContent(onReQueue: onReQueue),
   onSessionTimeout: () => _showBanner('Session expired'),
 )
 ```
@@ -153,7 +168,7 @@ CFWaitingRoomOverlayWidget(
 |---|---|
 | 0 s | Mock queue HTML loads → Phase 1 → Phase 2 overlay |
 | 10 s | Auto-pass → `onQueueDone()` fires, your app appears (Phase 3) |
-| 25 s (10+15) | Dialog: **"Yes — re-queue"** → `onNeedReQueue()` + reset to Phase 1 |
+| ~70 s | Dialog: **"Yes — re-queue"** → `onNeedReQueue()` + reset to Phase 1 |
 | | **"No — stay in app"** → `onSessionTimeout()` + timer restarts |
 
 ---
@@ -161,11 +176,15 @@ CFWaitingRoomOverlayWidget(
 ## Force re-queue (e.g. after a successful purchase)
 
 ```dart
-await CFWaitingRoomOverlayWidget.forceReQueue(
-  context,
-  config: _config,
-  onConfirm: () => setState(() => _queueDone = false),
-);
+// Inside appBuilder — onReQueue is provided by CFWaitingRoomGate
+appBuilder: (context, onReQueue) => ElevatedButton(
+  onPressed: () => CFWaitingRoomOverlayWidget.forceReQueue(
+    context,
+    config: _config,
+    onConfirm: onReQueue,  // gate resets to Phase 1 automatically
+  ),
+  child: const Text('Re-queue'),
+),
 ```
 
 ---
@@ -175,9 +194,9 @@ await CFWaitingRoomOverlayWidget.forceReQueue(
 No full custom builder needed — pass widgets and styles directly:
 
 ```dart
-CFWaitingRoomOverlayWidget(
+CFWaitingRoomGate(
   config: _config,
-  onQueueDone: _onDone,
+  appBuilder: (context, onReQueue) => MyApp(onReQueue: onReQueue),
   overlayIcon: Image.asset('assets/logo.png', height: 64),
   loadingIcon: Image.asset('assets/spinner.gif', width: 56, height: 56),
   overlayBackgroundColor: const Color(0xFF0D1B2A),
@@ -199,15 +218,15 @@ Text labels driven from `WaitingRoomConfig` (Remote Config-friendly):
 ## Locale — `Accept-Language` header
 
 Resolution order:
-1. `CFWaitingRoomOverlayWidget.locale` — widget-level `Locale` override
+1. `CFWaitingRoomGate.locale` — widget-level `Locale` override
 2. `WaitingRoomConfig.locale` — Remote Config BCP-47 string, e.g. `"zh-HK"`
 3. Device system locale (`PlatformDispatcher.instance.locale`)
 
 ```dart
-CFWaitingRoomOverlayWidget(
+CFWaitingRoomGate(
   config: _config,
   locale: const Locale('zh', 'HK'),
-  onQueueDone: _onDone,
+  appBuilder: (context, onReQueue) => MyApp(onReQueue: onReQueue),
 )
 ```
 
@@ -218,9 +237,9 @@ CFWaitingRoomOverlayWidget(
 ### Phase 2 waiting overlay
 
 ```dart
-CFWaitingRoomOverlayWidget(
+CFWaitingRoomGate(
   config: _config,
-  onQueueDone: _onDone,
+  appBuilder: (context, onReQueue) => MyApp(onReQueue: onReQueue),
   waitingOverlayBuilder: (context, info) => MyWaitingScreen(
     title: info.title,
     eta: info.eta,
@@ -232,11 +251,40 @@ CFWaitingRoomOverlayWidget(
 ### Force re-queue page
 
 ```dart
-CFWaitingRoomOverlayWidget(
+// Pass pageBuilder to CFWaitingRoomOverlayWidget.forceReQueue
+CFWaitingRoomOverlayWidget.forceReQueue(
+  context,
   config: _config,
-  onQueueDone: _onDone,
-  reQueuePageBuilder: (context, onConfirm) =>
-      MyReQueuePage(onConfirm: onConfirm),
+  onConfirm: onReQueue,
+  pageBuilder: (context, onConfirm) => MyReQueuePage(onConfirm: onConfirm),
+);
+```
+
+---
+
+## Advanced — `autoReQueue` control
+
+By default, when the session timer fires the gate automatically revokes the CF
+cookie and transitions back to Phase 2 if the queue is active again.  Set
+`autoReQueue: false` in `WaitingRoomConfig` to take manual control:
+
+```dart
+WaitingRoomConfig(
+  sessionTimeoutMinutes: 25,
+  autoReQueue: false,          // widget revokes cookie only
+)
+
+// Then use overlayKey to trigger the check yourself:
+final _overlayKey = GlobalKey<CFWaitingRoomOverlayWidgetState>();
+
+CFWaitingRoomGate(
+  config: _config,
+  overlayKey: _overlayKey,
+  onSessionTimeout: () async {
+    await _myAppSignOut();                      // your async work first
+    _overlayKey.currentState?.checkQueueStatus(); // then trigger re-check
+  },
+  appBuilder: (context, onReQueue) => MyApp(onReQueue: onReQueue),
 )
 ```
 

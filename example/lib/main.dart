@@ -29,10 +29,6 @@ class _GatePage extends StatefulWidget {
 }
 
 class _GatePageState extends State<_GatePage> {
-  bool _queueDone = false;
-  int _widgetGeneration = 0;
-
-  // Toggleable config flags
   bool _isEnterprise = false;
 
   WaitingRoomConfig get _config => WaitingRoomConfig(
@@ -54,18 +50,7 @@ class _GatePageState extends State<_GatePage> {
         reQueueDialogBtnText: '確定並重新排隊',
       );
 
-  void _onQueueDone() => setState(() => _queueDone = true);
-
-  void _onNeedReQueue() => setState(() {
-        _queueDone = false;
-        _widgetGeneration++;
-      });
-
-  void _toggleEnterprise(bool value) => setState(() {
-        _isEnterprise = value;
-        // Remount widget so the new isEnterprise value takes effect immediately.
-        _widgetGeneration++;
-      });
+  void _toggleEnterprise(bool value) => setState(() => _isEnterprise = value);
 
   @override
   Widget build(BuildContext context) {
@@ -73,52 +58,47 @@ class _GatePageState extends State<_GatePage> {
       canPop: false,
       child: Scaffold(
         backgroundColor: Colors.black,
-        body: Stack(
-          children: [
-            if (_queueDone)
-              _AppPage(
-                onNeedReQueue: _onNeedReQueue,
-                isEnterprise: _isEnterprise,
-                onToggleEnterprise: _toggleEnterprise,
-                config: _config,
+        // ── CFWaitingRoomGate is the root — no manual Stack / key needed ──
+        body: CFWaitingRoomGate(
+          config: _config,
+          // Your app content — shown after the queue is passed (Phase 3).
+          // onReQueue is provided by the gate; pass it to forceReQueue.onConfirm.
+          appBuilder: (ctx, onReQueue) => _AppPage(
+            config: _config,
+            isEnterprise: _isEnterprise,
+            onToggleEnterprise: _toggleEnterprise,
+            onReQueue: onReQueue,
+          ),
+          onSessionTimeout: () {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('⏱ Session expired — checking queue…'),
+                duration: Duration(seconds: 2),
               ),
-            CFWaitingRoomOverlayWidget(
-              key: ValueKey(_widgetGeneration),
-              config: _config,
-              onQueueDone: _onQueueDone,
-              onSessionTimeout: () {
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('⏱ Session expired — checking queue…'),
-                    duration: Duration(seconds: 2),
-                  ),
-                );
-              },
-              onNeedReQueue: _onNeedReQueue,
-              mockConfig: MockConfig(
-                isEnable: false,
-                waitDuration: const Duration(seconds: 10),
-              ),
-              overlayIcon: const Icon(
-                Icons.stadium_outlined,
-                color: Colors.white70,
-                size: 48,
-              ),
-              overlayBackgroundColor: const Color(0xFF1A2C45),
-              titleStyle: const TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                height: 1.5,
-              ),
-              refreshMessageStyle: const TextStyle(
-                color: Colors.white70,
-                fontSize: 13,
-                height: 1.5,
-              ),
-            ),
-          ],
+            );
+          },
+          mockConfig: MockConfig(
+            isEnable: false,
+            waitDuration: const Duration(seconds: 10),
+          ),
+          overlayIcon: const Icon(
+            Icons.stadium_outlined,
+            color: Colors.white70,
+            size: 48,
+          ),
+          overlayBackgroundColor: const Color(0xFF1A2C45),
+          titleStyle: const TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            height: 1.5,
+          ),
+          refreshMessageStyle: const TextStyle(
+            color: Colors.white70,
+            fontSize: 13,
+            height: 1.5,
+          ),
         ),
       ),
     );
@@ -129,16 +109,16 @@ class _GatePageState extends State<_GatePage> {
 
 class _AppPage extends StatelessWidget {
   const _AppPage({
-    required this.onNeedReQueue,
+    required this.config,
     required this.isEnterprise,
     required this.onToggleEnterprise,
-    required this.config,
+    required this.onReQueue,
   });
 
-  final VoidCallback onNeedReQueue;
+  final WaitingRoomConfig config;
   final bool isEnterprise;
   final ValueChanged<bool> onToggleEnterprise;
-  final WaitingRoomConfig config;
+  final VoidCallback onReQueue;
 
   @override
   Widget build(BuildContext context) {
@@ -216,6 +196,7 @@ class _AppPage extends StatelessWidget {
               ),
               const SizedBox(height: 12),
 
+              // Scenario 1: Force re-queue (built-in dialog)
               _ScenarioTile(
                 icon: Icons.shopping_cart_checkout,
                 title: 'Force Re-Queue',
@@ -225,11 +206,12 @@ class _AppPage extends StatelessWidget {
                 onTap: () => CFWaitingRoomOverlayWidget.forceReQueue(
                   context,
                   config: config,
-                  onConfirm: onNeedReQueue,
+                  onConfirm: onReQueue, // gate resets automatically
                 ),
               ),
               const SizedBox(height: 12),
 
+              // Scenario 2: Force re-queue with custom page
               _ScenarioTile(
                 icon: Icons.shopping_bag_outlined,
                 title: 'Force Re-Queue (Custom Page)',
@@ -238,19 +220,20 @@ class _AppPage extends StatelessWidget {
                 onTap: () => CFWaitingRoomOverlayWidget.forceReQueue(
                   context,
                   config: config,
-                  onConfirm: onNeedReQueue,
+                  onConfirm: onReQueue,
                   pageBuilder: (ctx, onConfirm) =>
                       _CustomReQueuePage(onConfirm: onConfirm),
                 ),
               ),
               const SizedBox(height: 12),
 
+              // Scenario 3: Instant re-queue (no dialog)
               _ScenarioTile(
                 icon: Icons.refresh,
                 title: 'Instant Re-Queue (no dialog)',
-                subtitle: 'Directly fires onNeedReQueue — no confirmation.',
+                subtitle: 'Directly resets the gate — no confirmation.',
                 color: Colors.blueAccent,
-                onTap: onNeedReQueue,
+                onTap: onReQueue,
               ),
             ],
           ),
