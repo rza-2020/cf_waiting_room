@@ -187,7 +187,7 @@ class WaitingRoomConfig {
     Duration base = Duration(minutes: sessionTimeoutMinutes!);
     // Non-enterprise: CF auto-renews the cookie on each request, so add a
     // 60-second grace to guarantee it has truly expired when the timer fires.
-    if (isEnterprise != true) base += const Duration(seconds: 10);
+    if (isEnterprise != true) base += const Duration(seconds: 60);
     return base;
   }
 

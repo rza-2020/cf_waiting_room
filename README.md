@@ -45,7 +45,7 @@ User opens app
 
 ```yaml
 dependencies:
-  cf_waiting_room: ^0.3.0
+  cf_waiting_room: ^0.3.1
 ```
 
 ---
@@ -168,8 +168,8 @@ CFWaitingRoomGate(
 |---|---|
 | 0 s | Mock queue HTML loads → Phase 1 → Phase 2 overlay |
 | 10 s | Auto-pass → `onQueueDone()` fires, your app appears (Phase 3) |
-| ~70 s | Dialog: **"Yes — re-queue"** → `onNeedReQueue()` + reset to Phase 1 |
-| | **"No — stay in app"** → `onSessionTimeout()` + timer restarts |
+| ~70 s | Dialog: **"Yes — still in queue"** → `onNeedReQueue()` + reset to Phase 1 |
+| | **"No — queue cleared"** → `onSessionTimeout()` + timer restarts |
 
 ---
 
@@ -335,3 +335,17 @@ user skips the queue if their session is still valid.
 | Android  | ✅ |
 | iOS      | ✅ |
 | Web      | ❌ (`webview_flutter` not supported on Web) |
+
+---
+
+## Phase-aware error handling
+
+Network errors inside the WebView are handled differently per phase so a
+transient connectivity blip never silently lets the user skip the queue:
+
+| Phase | Main-frame error behaviour |
+|-------|---------------------------|
+| **Phase 1** (WebView full-screen) | `onQueueDone()` is called — graceful fallback, app is shown. |
+| **Phase 2** (native overlay + 1×1 WebView) | Error is ignored; CF's own auto-refresh JS will retry automatically. |
+| **Phase 3** (invisible WebView, post-pass monitoring) | Session timer restarts; the error is **never** treated as a queue pass. |
+
