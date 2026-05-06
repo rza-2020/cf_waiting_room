@@ -1,3 +1,14 @@
+## 0.3.2
+
+- fix: restore 60-second non-enterprise grace period in `effectiveSessionTimeout`
+  (was accidentally reduced to 10 s in 0.3.1; CHANGELOG and README already
+  documented 60 s, now code matches).
+- docs: update README install version to `^0.3.2`.
+- docs: correct mock-mode dialog button labels (`"Yes — still in queue"` /
+  `"No — queue cleared"`) to match the actual `AlertDialog` text.
+- docs: add **Phase-aware error handling** table explaining per-phase WebView
+  error behaviour introduced in 0.3.1.
+
 ## 0.3.1
 
 - fix: main-frame WebView errors in Phase 2/3 no longer incorrectly fire

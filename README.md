@@ -45,7 +45,7 @@ User opens app
 
 ```yaml
 dependencies:
-  cf_waiting_room: ^0.3.1
+  cf_waiting_room: ^0.3.2
 ```
 
 ---
